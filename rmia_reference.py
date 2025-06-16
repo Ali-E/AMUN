@@ -6,13 +6,15 @@ import matplotlib.pyplot as plt
 import torch.utils
 import torchvision
 import torchvision.transforms as transforms
-from datasets import get_dataset
+from datasetslocal import get_dataset
+from datasets import load_dataset
 import os
 import argparse
 import evaluation
 from models import *
 from models.resnet_orig import ResNet18_orig
 import pandas as pd
+from models.vgg import VGG
 import random
 from torch.utils.data import Dataset
 
@@ -77,6 +79,8 @@ parser.add_argument('--mask_path', default=None, type=str)
 parser.add_argument('--unnormalize', default=True, type=bool)
 parser.add_argument('--norm_cond', default='unnorm', help='unnorm or norm for transform')
 
+parser.add_argument('--num_classes', default=10, type=int, help='number of classes in the dataset')
+
 ####### RMIA parameters:
 parser.add_argument('--gamma', default=0.1, type=float, help='threshold value for RMIA')
 parser.add_argument('--a_factor', default=0.4, type=float, help='factor a for inline likelihood evaluation')
@@ -114,6 +118,9 @@ if args.adv_delta is None:
     print('adv delta not provided!')
     exit(0)
 
+print('model: ', args.model)
+print('dataset: ', args.dataset)
+
 
 def test(net, loader, criterion):
     net.eval()
@@ -135,6 +142,44 @@ def test(net, loader, criterion):
     print(mode + '/acc', 100.*correct/total)
     print(mode + '/loss', test_loss/(batch_idx+1))
     return test_loss/(batch_idx+1), 100.*correct/total
+
+
+class basicDataset(Dataset):
+    def __init__(self, data, transform=None, target_transform=None):
+        self.data = data
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return len(self.data)
+
+    # def report(self):
+    #     print('reporting from basicDataset')
+    #     print(self.data.shape)
+
+    def __getitem__(self, idx):
+        if self.data.shape[-1] == 2:
+            image_in = self.data[idx]['image']
+            image = copy.deepcopy(np.asarray(image_in))
+            # print(image.shape)
+            if len(image.shape) == 2:
+                image = copy.deepcopy(np.stack((image, image, image), axis=2))
+            # image = image.transpose(2, 0, 1)
+        else:
+            print('shape is 1')
+            image_in = self.data[idx][0]
+
+        if self.data.shape[-1] == 2:
+            label = self.data[idx]['label']
+        else:
+            label = self.data[idx][1]
+
+        if self.transform:
+            image = self.transform(image)
+        if self.target_transform:
+            label = self.target_transform(label)
+        return image, label
+
 
 
 if __name__ == "__main__":
@@ -175,6 +220,7 @@ if __name__ == "__main__":
         exit(0)
 
     unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
+    unlearn_idx = [int(i) for i in unlearn_idx]
 
     test_acc_list = []
     forget_acc_list = []
@@ -240,6 +286,34 @@ if __name__ == "__main__":
 
             advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, ratio=120., unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device)
 
+        elif args.dataset == 'tinynet':
+            print('Tine ImageNet!')
+            in_chan = 3
+            tinynet_flag = True
+            args.num_classes = 200
+
+            transform_test = transforms.Compose([
+                transforms.ToTensor(),
+                # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
+
+            transform_adv = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+
+            trainset_all = load_dataset('Maysee/tiny-imagenet', split='train')
+            trainset = basicDataset(trainset_all, transform=transform_test, target_transform=None)
+            print('trainset: ', len(trainset))
+            train_loader = torch.utils.data.DataLoader(trainset, batch_size=256, shuffle=True, num_workers=1)
+
+            testset_all = load_dataset('Maysee/tiny-imagenet', split='valid')
+            testset = basicDataset(testset_all, transform=transform_test, target_transform=None)
+            print('testset: ', len(testset))
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=256, shuffle=False, num_workers=1)
+
+            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, ratio=120., unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device) ### add_noise=False
+
+
         else:
             print('mnist!')
             in_chan = 1
@@ -247,6 +321,7 @@ if __name__ == "__main__":
             testset = get_dataset('mnist', 'test')
 
         unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
+        unlearn_idx = [int(i) for i in unlearn_idx]
 
         print('==> Building model..')
         print('-----------------------------------------------------------------')
@@ -291,6 +366,8 @@ if __name__ == "__main__":
         if args.trials == -32:
             trial_seeds = [i for i in range(32)]
             all_prob_mat = np.zeros((32, len(trainset)))
+            if args.one_hot:
+                all_prob_mat = np.zeros((32, len(trainset), args.num_classes))
         elif args.trials == -64:
             trial_seeds = [i for i in range(64)]
             all_prob_mat = np.zeros((64, len(trainset)))
@@ -298,12 +375,12 @@ if __name__ == "__main__":
             trial_seeds = [i for i in range(128)]
             all_prob_mat = np.zeros((128, len(trainset)))
             if args.one_hot:
-                all_prob_mat = np.zeros((128, len(trainset), 10))
+                all_prob_mat = np.zeros((128, len(trainset), args.num_classes))
         elif args.trials == -4:
             trial_seeds = [i for i in range(4)]
             all_prob_mat = np.zeros((4, len(trainset)))
             if args.one_hot:
-                all_prob_mat = np.zeros((4, len(trainset), 10))
+                all_prob_mat = np.zeros((4, len(trainset), args.num_classes))
         else:
             trial_seeds = [10**i for i in range(3)][:args.trials]
 
@@ -313,6 +390,9 @@ if __name__ == "__main__":
                     net = ResNet18_orig(in_chan=in_chan, bn=bn_flag, device=device, elu_flag=False)
                 elif clip_flag:
                     net = ResNet18(concat_sv=concat_sv, in_chan=in_chan, device=device, clip=args.convsn, clip_concat=args.catsn, clip_flag=True, bn=bn_flag, bn_clip=bn_clip, bn_hard=bn_hard, clip_steps=clip_steps, bn_count=steps_count, clip_outer=clip_outer_flag, clip_opt_iter=opt_iter, summary=True, writer=None, save_info=False, outer_iters=outer_iters, outer_steps=outer_steps)
+
+            elif args.model == 'VGG': 
+                net = VGG('VGG19', in_chan=in_chan, num_classes=args.num_classes, tinynet=tinynet_flag)
 
             elif args.model == 'DLA':
                 if orig_flag:
@@ -346,6 +426,7 @@ if __name__ == "__main__":
             print(included_indices.shape)
             included_indices = np.arange(len(included_indices))[included_indices]
             print(included_indices.shape)
+            included_indices = [int(i) for i in included_indices]
             included_set = torch.utils.data.Subset(trainset, included_indices)
             included_loader = torch.utils.data.DataLoader(included_set, shuffle=False, batch_size=128, num_workers=1)
 
@@ -354,7 +435,7 @@ if __name__ == "__main__":
             nonincluded_loader = torch.utils.data.DataLoader(nonincluded_set, shuffle=False, batch_size=128, num_workers=1)
 
 
-            eval_results = evaluation.RMIA(
+            eval_results = evaluation.RMIA_old(
                 model=net,
                 remain_loader=trainloader,
                 forget_loader=included_loader,

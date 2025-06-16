@@ -8,9 +8,9 @@ class PGDL2(Attack):
     def __init__(
         self,
         model,
-        eps=0.01,
+        eps=0.04,
         # alpha=0.2,
-        steps=10,
+        steps=50,
         random_start=False,
         eps_for_division=1e-10,
     ):
@@ -65,8 +65,6 @@ class PGDL2(Attack):
 
                 loss        = loss_fn(logits, labels)
                 grad        = torch.autograd.grad(loss, adv_images)[0]
-
-                print(adv_images.shape, logits.shape, labels.shape, eps.shape, alpha.shape)
 
                 # normalise gradient sample-wise
                 grad_norm   = grad.view(batch_size, -1).norm(p=2, dim=1) \

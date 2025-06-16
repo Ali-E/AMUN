@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 # from models.spectral_normalization import SpectralNorm_miyato as miyato
-from models.spectral_normalization_deflate_complex_both_bn import SpectralNorm
+# from models.spectral_normalization_deflate_complex_both_bn import SpectralNorm
 
 
 
@@ -25,14 +25,13 @@ class BasicBlock(nn.Module):
         self.elu_flag = elu_flag
 
         # self.bn1 = nn.BatchNorm2d(planes)
-        self.bn1 = SpectralNorm(nn.BatchNorm2d(planes), device=device, clip_flag=bn_clip, clip=1., clip_steps=bn_count, bn_hard=bn_hard)
+        self.bn1 = nn.BatchNorm2d(planes)
 
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.kernels.append((self.conv2.weight, self.input_size))
 
         # self.bn2 = nn.BatchNorm2d(planes)
-        self.bn2 = SpectralNorm(nn.BatchNorm2d(planes), device=device, clip_flag=bn_clip, clip=1., clip_steps=bn_count, bn_hard=bn_hard)
-
+        self.bn2 = nn.BatchNorm2d(planes)
 
         self.shortcut_flag = False
 
@@ -47,8 +46,7 @@ class BasicBlock(nn.Module):
                 # self.shortcut = nn.Sequential(
                 conv = nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False)
                 # nn.BatchNorm2d(self.expansion*planes)
-                bn_l = SpectralNorm(nn.BatchNorm2d(self.expansion*planes), device=device, clip_flag=bn_clip, clip=1., clip_steps=bn_count, bn_hard=bn_hard)
-                # )
+                bn_l = nn.BatchNorm2d(self.expansion*planes)
                 self.shortcut = nn.Sequential(conv, bn_l)
                 self.kernels.append((conv.weight, self.input_size))
             else:
@@ -144,10 +142,8 @@ class ResNet_orig(nn.Module):
         if in_chan == 1:
             self.kernels = [(self.conv1.weight, [28])]
 
-
-
         # self.bn1 = nn.BatchNorm2d(64)
-        self.bn1 = SpectralNorm(nn.BatchNorm2d(64), device=device, clip_flag=bn_clip, clip=1., bn_hard=bn_hard, clip_steps=bn_count)
+        self.bn1 = nn.BatchNorm2d(64)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1, bn=bn, bn_clip=bn_clip, bn_hard=bn_hard, bn_count=bn_count, device=device, elu_flag=elu_flag)
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2, bn=bn, bn_clip=bn_clip, bn_hard=bn_hard, bn_count=bn_count, device=device, elu_flag=elu_flag)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2, bn=bn, bn_clip=bn_clip, bn_hard=bn_hard, bn_count=bn_count, device=device, elu_flag=elu_flag)

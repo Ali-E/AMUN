@@ -1,3 +1,4 @@
+import time
 import torch
 import torch.nn as nn
 import argparse
@@ -5,6 +6,7 @@ import torchvision.transforms as transforms
 import torchvision
 from models.resnet import ResNet18
 from models.resnet_orig import ResNet18_orig
+from models.vgg import VGG
 from models.simple_conv import simpleConv
 from models.simple_conv_orig import simpleConv_orig
 from pgdl2_modified import PGDL2#, FGSM
@@ -14,16 +16,44 @@ import numpy as np
 import sys
 import os
 import pandas as pd
+import copy
 
 currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(os.path.dirname(currentdir))
 sys.path.append(parentdir)
 
 from utils_ensemble import test
+from datasets import load_dataset
+from torch.utils.data import Dataset
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
+
+class basicDataset(Dataset):
+    def __init__(self, data, transform=None, target_transform=None):
+        self.data = data
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        image_in = self.data[idx]['image']
+        image = copy.deepcopy(np.asarray(image_in))
+        # print(image.shape)
+        if len(image.shape) == 2:
+            image = copy.deepcopy(np.stack((image, image, image), axis=2))
+        # image = image.transpose(2, 0, 1)
+        label = self.data[idx]['label']
+        if self.transform:
+            image = self.transform(image)
+        if self.target_transform:
+            label = self.target_transform(label)
+        return image, label
+
+
+parser = argparse.ArgumentParser(description='Build adversarial dataset for unlearning')
 parser.add_argument('--dataset', default='cifar')
 parser.add_argument('--arch', default='ResNet18', type=str)
 parser.add_argument('--model_path', default=None, type=str)
@@ -48,9 +78,7 @@ parser.add_argument('--seed', default=1, type=int, help='seed value')
 parser.add_argument('--convsn', default=1., type=float, help='clip value for conv and dense layers')
 parser.add_argument('--bottom_clip', default=0.5, type=float, help='lower bound for smallest singular value')
 parser.add_argument('--widen_factor', default=1, type=int, help='widen factor for WideResNet')
-parser.add_argument('--unnormalize', default=True, type=bool)
-parser.add_argument('--norm_cond', default='unnorm', help='unnorm or norm for transform')
-parser.add_argument('--attack', default='pgdl2', help='unnorm or norm for transform')
+parser.add_argument('--attack', default='pgdl2')
 parser.add_argument('--coeff', default=2.0, type=float)
 parser.add_argument('--lamda', default=2.0, type=float)
 parser.add_argument('--scale', default=5.0, type=float)
@@ -58,10 +86,6 @@ parser.add_argument('--plus-adv', action='store_false')
 parser.add_argument('--init-eps', default=0.01, type=float)
 
 args = parser.parse_args()
-
-if args.norm_cond == 'norm':
-    args.unnormalize = False
-print('!!!!!!!!! unnormalized: ', args.unnormalize)
 
 if args.adv_training:
     mode = f"adv_{args.epsilon}_{args.num_steps}"
@@ -116,31 +140,43 @@ def main():
         print('cifar!')
         in_chan = 3
 
-        if args.unnormalize:
-            transform_train = transforms.Compose([
-                transforms.ToTensor(),
-            ])
+        transform_train = transforms.Compose([
+            transforms.ToTensor(),
+        ])
 
-            transform_test = transforms.Compose([
-                transforms.ToTensor(),
-            ])
-        else:
-            transform_train = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            ])
-
-            transform_test = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            ])
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+        ])
 
         trainset = torchvision.datasets.CIFAR10( root='./data', train=True, download=True, transform=transform_train)
-        # train_loader = torch.utils.data.DataLoader( trainset, batch_size=1, shuffle=False, num_workers=1)
         train_loader = torch.utils.data.DataLoader( trainset, batch_size=args.batch, shuffle=False, num_workers=1)
 
         testset = torchvision.datasets.CIFAR10( root='./data', train=False, download=True, transform=transform_test)
-        test_loader = torch.utils.data.DataLoader( testset, batch_size=1, shuffle=False, num_workers=1)
+        test_loader = torch.utils.data.DataLoader( testset, batch_size=args.batch, shuffle=False, num_workers=1)
+
+
+    elif args.dataset == 'tinynet':
+        print('Tiny ImageNet!')
+        in_chan = 3
+        tinynet_flag = True
+        num_classes = 200
+        transform_train = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+
+        trainset_all = load_dataset('Maysee/tiny-imagenet', split='train')
+        trainset = basicDataset(trainset_all, transform=transform_train, target_transform=None)
+        print('trainset: ', len(trainset))
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch, shuffle=True, num_workers=1)
+
+        testset_all = load_dataset('Maysee/tiny-imagenet', split='valid')
+        testset = basicDataset(testset_all, transform=transform_test, target_transform=None)
+        print('testset: ', len(testset))
+        test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch, shuffle=False, num_workers=1)
 
     writer = None
 
@@ -151,6 +187,8 @@ def main():
             submodel = ResNet18(concat_sv=False, in_chan=in_chan, device=device, clip=args.convsn, clip_flag=True, bn=bn_flag, clip_steps=clip_steps,  clip_outer=False, clip_opt_iter=opt_iter, summary=True, writer=writer, save_info=False, elu_flag=elu_flag, identifier=0)
         elif args.arch == 'simpleConv':
             submodel = simpleConv(concat_sv=False, in_chan=in_chan, device=device, clip=args.convsn, clip_bottom=args.bottom_clip, clip_flag=True, bn=bn_flag, clip_steps=clip_steps//2,  clip_outer=False, clip_opt_iter=opt_iter, summary=True, writer=writer, save_info=False, identifier=0)
+    elif args.arch == 'VGG':
+        submodel = VGG('VGG19', in_chan=in_chan, num_classes=num_classes, tinynet=tinynet_flag)
     elif orig_flag:
         if args.arch == 'ResNet18':
             submodel = ResNet18_orig(in_chan=in_chan, bn=bn_flag, device=device, elu_flag=elu_flag)
@@ -180,10 +218,12 @@ def main():
     delta_norm_list = []
     min_eps = 1000
 
+    start_time = time.time()
+
     global_idx = 0
     for idx, (inputs, targets) in enumerate(train_loader):
-        if idx > 50:
-            break
+        # if idx > 50:
+        #     break
         if idx % 50 == 0:
             print(idx)
         inputs, targets = inputs.to(device), targets.to(device)
@@ -210,22 +250,24 @@ def main():
 
         if True: #idx > 0 and idx % 5000 == 0:
             if args.attack == 'pgdl2':
-                adv_tensor_path = os.path.join(args.outdir, f'paral_cor_adv_tensor.pt')
-                smallest_eps = os.path.join(args.outdir, f'paral_cor_smallest_eps.csv')
+                adv_tensor_path = os.path.join(args.outdir, f'adv_tensor.pt')
+                smallest_eps = os.path.join(args.outdir, f'smallest_eps.csv')
             else:
-                adv_tensor_path = os.path.join(args.outdir, f'paral_cor_adv_tensor_{args.attack}.pt')
-                smallest_eps = os.path.join(args.outdir, f'paral_cor_smallest_eps_{args.attack}.csv')
+                adv_tensor_path = os.path.join(args.outdir, f'adv_tensor_{args.attack}.pt')
+                smallest_eps = os.path.join(args.outdir, f'smallest_eps_{args.attack}.csv')
 
             torch.save(adv_img_list, adv_tensor_path)
             df = pd.DataFrame({'idx': idx_list, 'label': label_list, 'orig_pred': orig_pred_list, 'adv_pred': adv_pred_list, 'smallest_eps': s_eps_list, 'delta_norm': delta_norm_list})
             df.to_csv(smallest_eps, index=False)
 
     if args.attack == 'pgdl2':
-        adv_tensor_path = os.path.join(args.outdir, f'paral_cor_adv_tensor.pt')
-        smallest_eps = os.path.join(args.outdir, f'Paral_cor_smallest_eps.csv')
+        adv_tensor_path = os.path.join(args.outdir, f'adv_tensor.pt')
+        smallest_eps = os.path.join(args.outdir, f'smallest_eps.csv')
     else:
-        adv_tensor_path = os.path.join(args.outdir, f'paral_cor_adv_tensor_{args.attack}.pt')
-        smallest_eps = os.path.join(args.outdir, f'paral_cor_smallest_eps_{args.attack}.csv')
+        adv_tensor_path = os.path.join(args.outdir, f'adv_tensor_{args.attack}.pt')
+        smallest_eps = os.path.join(args.outdir, f'smallest_eps_{args.attack}.csv')
+
+    print('total time: ', time.time() - start_time)
 
     torch.save(adv_img_list, adv_tensor_path)
 

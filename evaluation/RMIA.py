@@ -61,7 +61,7 @@ def collect_prob(data_loader, model, device, one_hot, logits_out):
     return prob, accuracy, all_targets
 
 
-def RMIA(model, remain_loader, forget_loader, test_loader, device, one_hot=True, logits_out=True):
+def RMIA_old(model, remain_loader, forget_loader, test_loader, device, one_hot=True, logits_out=True):
     """
     train_loader is the data involved in the training of the reference models.
     """
@@ -79,6 +79,23 @@ def RMIA(model, remain_loader, forget_loader, test_loader, device, one_hot=True,
         "test_targets": test_targets,
         "remain_acc": remain_acc,
         "forget_acc": forget_acc,
+        "test_acc": test_acc,
+
+    }
+    
+    return m
+
+
+def RMIA(model, test_loader, device, one_hot=True, logits_out=True):
+    """
+    train_loader is the data involved in the training of the reference models.
+    """
+
+    test_probs, test_acc, test_targets  = collect_prob(test_loader, model, device, one_hot, logits_out)
+
+    m = {
+        "test_likelihood": test_probs,
+        "test_targets": test_targets,
         "test_acc": test_acc,
 
     }

@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import torch.utils
 import torchvision
 import torchvision.transforms as transforms
-from datasets import get_dataset
 import os
 import argparse
 import evaluation
@@ -18,7 +17,7 @@ from torch.utils.data import Dataset
 
 
 class CustomImageDataset(Dataset):
-    def __init__(self, labels_file, imgs_path, sample_count=2, ratio=120., unlearn_indices=None, add_noise=True, transform=None, target_transform=None):#, device='cuda'):
+    def __init__(self, labels_file, imgs_path, unlearn_indices=None, transform=None, target_transform=None):
         self.imgs_path = imgs_path
         self.images_delta_df = pd.read_csv(labels_file)
         self.img_labels = self.images_delta_df['adv_pred'].values[unlearn_indices]
@@ -27,16 +26,6 @@ class CustomImageDataset(Dataset):
         self.target_transform = target_transform # label transformation
         self.adv_images = torch.load(self.imgs_path, map_location=torch.device('cpu'))
         self.adv_images = self.adv_images[unlearn_indices]
-
-        if add_noise:
-            adv_images_list = []
-            for _ in range(sample_count):
-                noise = torch.rand_like(self.adv_images) * torch.tensor(self.img_deltas/ratio).view(-1, 1, 1, 1)
-                adv_images = self.adv_images + noise
-                adv_images = torch.clamp(adv_images, min=0, max=1)
-                adv_images_list.append(adv_images)
-            self.adv_images = torch.cat(adv_images_list, dim=0)
-
         self.adv_images = self.adv_images.detach().numpy()
 
     def __len__(self):
@@ -58,7 +47,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,3"
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--dataset', default='cifar', help='dataset')
 parser.add_argument('--model', default='ResNet18', help='Deep Learning model to train')
-parser.add_argument('--method', default='catclip', help='clipping method (use orig for no clipping)')
+parser.add_argument('--method', default='orig', help='clipping method (use orig for no clipping)')
 parser.add_argument('--mode', default='wBN', help='what to do with BN layers (leave empty for keeping it as it is)')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--LRsteps', default=40, type=int, help='LR scheduler step')
@@ -74,12 +63,6 @@ parser.add_argument('--adv_delta', default=None, type=str)
 parser.add_argument('--source_model_path', default=None, type=str)
 parser.add_argument('--mask_path', default=None, type=str)
 
-parser.add_argument('--unnormalize', default=True, type=bool)
-parser.add_argument('--norm_cond', default='unnorm', help='unnorm or norm for transform')
-
-parser.add_argument('--noise_ratio', default=120, type=int) # default 120
-parser.add_argument('--sample_count', default=1, type=int) # default 1
-
 parser.add_argument('--catsn', default=-1, type=float)
 parser.add_argument('--convsn', default=1., type=float)
 parser.add_argument('--outer_steps', default=100, type=int)
@@ -91,10 +74,6 @@ args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('==========', device)
-
-if args.norm_cond == 'norm':
-    args.unnormalize = False
-print('!!!!!!!!! unnormalized: ', args.unnormalize)
 
 if device == 'cuda':
     # net = torch.nn.DataParallel(net)
@@ -126,9 +105,6 @@ def test(loader, criterion):
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
 
-    mode = 'test'
-    # print(mode + '/acc', 100.*correct/total)
-    # print(mode + '/loss', test_loss/(batch_idx+1))
     return test_loss/(batch_idx+1), 100.*correct/total
 
 
@@ -217,30 +193,18 @@ if __name__ == "__main__":
             print('cifar!')
             in_chan = 3
 
-            if args.unnormalize:
-                transform_test = transforms.Compose([
-                    transforms.ToTensor(),
-                ])
-            else:
-                transform_test = transforms.Compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-                ])
-
-            transform_adv = transforms.Compose([
+            transform = transforms.Compose([
                 transforms.ToTensor(),
             ])
 
-            trainset = torchvision.datasets.CIFAR10( root='./data', train=True, download=True, transform=transform_test)
-            testset = torchvision.datasets.CIFAR10( root='./data', train=False, download=True, transform=transform_test)
+            trainset = torchvision.datasets.CIFAR10( root='./data', train=True, download=True, transform=transform)
+            testset = torchvision.datasets.CIFAR10( root='./data', train=False, download=True, transform=transform)
 
-            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, sample_count=1, ratio=120., add_noise=False, unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device)
+            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images,unlearn_indices=unlearn_idx, transform=transform, target_transform=None)
 
         else:
-            print('mnist!')
-            in_chan = 1
-            trainset = get_dataset('mnist', 'train')
-            testset = get_dataset('mnist', 'test')
+            print('only cifar is supported for basic MIA, use RMIA instead!')
+            exit(0)
 
         unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
 
@@ -254,7 +218,6 @@ if __name__ == "__main__":
 
         forgetset = torch.utils.data.Subset(trainset, unlearn_idx)
         print('len of forget set: ', len(forgetset))  
-
         print('final len of trainset: ', len(trainset))  
         print('-----------------------------------------------------------------')
 
@@ -318,7 +281,7 @@ if __name__ == "__main__":
                 if clip_flag:
                     net.load_state_dict(checkpoint['net'], strict=False)
                 else:
-                    net.load_state_dict(checkpoint['net'])#, strict=False)
+                    net.load_state_dict(checkpoint['net'])
             print('model loaded')
 
             net.eval()
@@ -355,12 +318,8 @@ if __name__ == "__main__":
             )
 
 
-            if args.unnormalize:
-                retrain_res_5000 = {'UA': 94.49, 'RA': 100.0, 'TA': 94.33, 'MIA': 12.53}
-                retrain_res_25000 = {'UA': 92.09, 'RA': 100.0, 'TA': 91.85, 'MIA': 16.78}
-            else:
-                retrain_res_5000 = {'UA': 94.67, 'RA': 100.0, 'TA': 94.22, 'MIA': 12.11}
-                retrain_res_25000 = {'UA': 92.22, 'RA': 100.0, 'TA': 91.84, 'MIA': 16.61}
+            retrain_res_5000 = {'UA': 94.49, 'RA': 100.0, 'TA': 94.33, 'MIA': 12.53}
+            retrain_res_25000 = {'UA': 92.09, 'RA': 100.0, 'TA': 91.85, 'MIA': 16.78}
 
             retrain_res = {'UA': 0, 'RA': 0, 'TA': 0, 'MIA': 0}
             if unlearn_idx.shape[0] == 5000:
@@ -383,7 +342,6 @@ if __name__ == "__main__":
 
             avg_diff = (test_acc_diff + forget_acc_diff + remain_acc_diff + confidence_diff) / 4.
             avg_diff_list.append(avg_diff)
-
             test_acc_list.append(test_acc)
             forget_acc_list.append(forget_acc)
             remain_acc_list.append(remain_acc)
@@ -419,7 +377,6 @@ if __name__ == "__main__":
 
         df_avg = df.mean(axis=0)
         df_avg_final = df_avg[['forget_acc', 'remain_acc', 'test_acc', 'confidence', 'avg_diff']]
-        # df_avg_final['avg'] = df_avg_final.mean(axis=0)
         df_avg_final['adv_acc'] = df_avg['adv_acc']
         df_avg_final.to_csv(outdir + additional_name + str(args.epoch) + '_avg_mia_SVC_results.csv')
 

@@ -17,7 +17,8 @@ def get_data(model_count=64, seed=0, dataset_size=40000, pkeep=0.5):
 if __name__ == '__main__':
     model_count = 128
     seed = 0
-    dataset_size = 60000
+    # dataset_size = 60000 # cifar-10
+    dataset_size = 110000 # tiny-imagenet
     pkeep = 0.5
     keep = get_data(model_count, seed, dataset_size, pkeep)
     print(keep)

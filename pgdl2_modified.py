@@ -8,9 +8,9 @@ class PGDL2(Attack):
     def __init__(
         self,
         model,
-        eps=0.01,
+        eps=0.04,
         # alpha=0.2,
-        steps=10,
+        steps=50,
         random_start=False,
         eps_for_division=1e-10,
     ):
@@ -39,7 +39,7 @@ class PGDL2(Attack):
         eps_all         = torch.full((batch_size_all,), self.eps,  device=device)
         alpha_all       = eps_all / 10.0
         adv_images_all  = images.clone().detach()
-        preds_all       = labels.clone().detach()
+        adv_preds_all   =  torch.zeros_like(labels) - 1 # labels.clone().detach()
         indices_all     = torch.arange(batch_size_all, device=device)
         indices         = indices_all.clone()
         delta_all       = torch.zeros_like(eps_all)
@@ -66,10 +66,13 @@ class PGDL2(Attack):
                     adv_images_all[indices] = adv_images
                     eps_all[indices]        = eps
                     alpha_all[indices]      = alpha 
-                    preds_all[indices]      = preds
+                    adv_preds_all[indices]      = preds
 
                     cont_flag = False
                     break  
+                else:
+                    if ~still_correct.sum() != 0:
+                        adv_preds_all[indices[~still_correct]] = preds[~still_correct]
 
                 if orig_pred is None:
                     orig_pred = preds.detach()
@@ -92,7 +95,7 @@ class PGDL2(Attack):
                                           factor.view(-1, 1, 1, 1),
                                           min=0.0, max=1.0).detach()
 
-                adv_images    = adv_images[still_correct].requires_grad_()
+                adv_images    = adv_images[still_correct] #.requires_grad_()
                 batch_size    = still_correct.sum().item()
                 eps           = eps[still_correct]
                 alpha         = alpha[still_correct]
@@ -104,10 +107,13 @@ class PGDL2(Attack):
                 adv_images_all[indices] = adv_images
                 eps_all[indices]        = eps
                 alpha_all[indices]      = alpha 
-                preds_all[indices]      = preds
+                # preds_all[indices]      = preds
+
 
             if not cont_flag:
                 break
+
+            torch.cuda.empty_cache()
 
             with torch.no_grad():
                 preds         = self.get_logits(adv_images).argmax(1)
@@ -121,4 +127,4 @@ class PGDL2(Attack):
         delta_final = (adv_images_all - images).view(batch_size_all, -1)
         delta_norm  = delta_final.norm(p=2, dim=1)
 
-        return adv_images_all, orig_pred, preds_all, eps_all, delta_norm
+        return adv_images_all, orig_pred, adv_preds_all, eps_all, delta_norm

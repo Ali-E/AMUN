@@ -14,11 +14,8 @@ currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(os.path.dirname(currentdir))
 sys.path.append(parentdir)
 
-
 from utils_ensemble import AverageMeter, accuracy, test, requires_grad_
 from utils_ensemble import Cosine, Magnitude
-
-from trades import trades_loss
 
 
 def PGD(models, inputs, labels, eps):
@@ -51,7 +48,7 @@ def PGD(models, inputs, labels, eps):
     return adv.detach()
 
 
-def Naive_Trainer(args, loader: DataLoader, model, criterion, optimizer: Optimizer, epoch: int, device: torch.device, writer=None, TRADE_flag=False):
+def Naive_Trainer(args, loader: DataLoader, model, criterion, optimizer: Optimizer, epoch: int, device: torch.device, writer=None, scheduler=None):
 
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -69,20 +66,7 @@ def Naive_Trainer(args, loader: DataLoader, model, criterion, optimizer: Optimiz
         inputs.requires_grad = True
 
         logits = model(inputs)
-
-        if TRADE_flag:
-            loss = trades_loss(model=model,
-                                x_natural=inputs,
-                                y=targets,
-                                optimizer=optimizer,
-                                step_size=args.step_size_t,
-                                epsilon=args.epsilon_t,
-                                perturb_steps=args.num_steps_t,
-                                beta=args.beta_t,
-                                distance='l_2')
-        else:
-            loss = criterion(logits, targets)
-
+        loss = criterion(logits, targets)
         losses.update(loss.item(), batch_size)
 
         optimizer.zero_grad()
@@ -91,6 +75,9 @@ def Naive_Trainer(args, loader: DataLoader, model, criterion, optimizer: Optimiz
 
         batch_time.update(time.time() - end)
         end = time.time()
+
+        # if args.arch == 'vit':
+        #     scheduler.step()
 
     print('Epoch: ', epoch, 'Loss: ', losses.avg)
 

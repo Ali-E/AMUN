@@ -168,16 +168,16 @@ class ResNet(nn.Module):
         return out
 
 
-def ResNet18(device='cpu', in_chan=3, clip_flag=True, clip_outer=False, clip=1., clip_concat=1., clip_steps=50, clip_opt_iter=1, init_delay=0, summary=False, identifier=0, writer=None, bn=True, bn_clip=False, bn_hard=False, bn_count=100, save_info=False, concat_sv=False, outer_steps=200, outer_iters=1, elu_flag=False):
-    return ResNet(BasicBlock, [2, 2, 2, 2], in_chan=in_chan, device=device, clip_flag=clip_flag, clip_outer=clip_outer, clip=clip, clip_concat=clip_concat, clip_steps=clip_steps, clip_opt_iter=clip_opt_iter, init_delay=init_delay, summary=summary, writer=writer, identifier=identifier, bn=bn, bn_clip=bn_clip, bn_hard=bn_hard, bn_count=bn_count, concat_sv=concat_sv, save_info=save_info, outer_steps=outer_steps, outer_iters=outer_iters, elu_flag=elu_flag)
+def ResNet18(device='cpu', in_chan=3, clip_flag=True, clip_outer=False, clip=1., clip_concat=1., clip_steps=50, clip_opt_iter=1, init_delay=0, summary=False, identifier=0, writer=None, bn=True, bn_clip=False, bn_hard=False, bn_count=100, save_info=False, concat_sv=False, outer_steps=200, outer_iters=1, elu_flag=False, num_classes=10):
+    return ResNet(BasicBlock, [2, 2, 2, 2], in_chan=in_chan, device=device, clip_flag=clip_flag, clip_outer=clip_outer, clip=clip, clip_concat=clip_concat, clip_steps=clip_steps, clip_opt_iter=clip_opt_iter, init_delay=init_delay, summary=summary, writer=writer, identifier=identifier, bn=bn, bn_clip=bn_clip, bn_hard=bn_hard, bn_count=bn_count, concat_sv=concat_sv, save_info=save_info, outer_steps=outer_steps, outer_iters=outer_iters, elu_flag=elu_flag, num_classes=num_classes)
 
 
-def ResNet34(device='cpu', clip_flag=True, clip=1., clip_steps=50, clip_opt_iter=1, init_delay=0, summary=False, identifier=0, writer=None, bn=True):
-    return ResNet(BasicBlock, [3, 4, 6, 3], device=device, clip_flag=clip_flag, clip=clip, clip_steps=clip_steps, clip_opt_iter=clip_opt_iter, init_delay=init_delay, summary=summary, writer=writer, identifier=identifier, bn=bn)
+def ResNet34(device='cpu', clip_flag=True, clip=1., clip_steps=50, clip_opt_iter=1, init_delay=0, summary=False, identifier=0, writer=None, bn=True, num_classes=10):
+    return ResNet(BasicBlock, [3, 4, 6, 3], device=device, clip_flag=clip_flag, clip=clip, clip_steps=clip_steps, clip_opt_iter=clip_opt_iter, init_delay=init_delay, summary=summary, writer=writer, identifier=identifier, bn=bn, num_classes=num_classes)
 
 
-def ResNet50(device='cpu', clip_flag=True, clip=1., clip_steps=50, clip_opt_iter=1, init_delay=0, summary=False, identifier=0, writer=None, bn=True):
-    return ResNet(Bottleneck, [3, 4, 6, 3], device=device, clip_flag=clip_flag, clip=clip, clip_steps=clip_steps, clip_opt_iter=clip_opt_iter, init_delay=init_delay, summary=summary, writer=writer, identifier=identifier, bn=bn)
+def ResNet50(device='cpu', clip_flag=True, clip=1., clip_steps=50, clip_opt_iter=1, init_delay=0, summary=False, identifier=0, writer=None, bn=True, num_classes=10):
+    return ResNet(Bottleneck, [3, 4, 6, 3], device=device, clip_flag=clip_flag, clip=clip, clip_steps=clip_steps, clip_opt_iter=clip_opt_iter, init_delay=init_delay, summary=summary, writer=writer, identifier=identifier, bn=bn, num_classes=num_classes)
 
 
 def ResNet101():

@@ -7,12 +7,14 @@ import matplotlib.pyplot as plt
 import torch.utils
 import torchvision
 import torchvision.transforms as transforms
-from datasets import get_dataset
+from datasetslocal import get_dataset
+from datasets import load_dataset
 import os
 import argparse
 import evaluation
 from models import *
 from models.resnet_orig import ResNet18_orig
+from models.vgg import VGG
 import pandas as pd
 import random
 from sklearn.metrics import roc_auc_score
@@ -60,6 +62,40 @@ class CustomImageDataset(Dataset):
         return image, label
 
 
+class basicDataset(Dataset):
+    def __init__(self, data, transform=None, target_transform=None):
+        self.data = data
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        if self.data.shape[-1] == 2:
+            image_in = self.data[idx]['image']
+            image = copy.deepcopy(np.asarray(image_in))
+            # print(image.shape)
+            if len(image.shape) == 2:
+                image = copy.deepcopy(np.stack((image, image, image), axis=2))
+            # image = image.transpose(2, 0, 1)
+        else:
+            print('shape is 1')
+            image_in = self.data[idx][0]
+
+        if self.data.shape[-1] == 2:
+            label = self.data[idx]['label']
+        else:
+            label = self.data[idx][1]
+
+        if self.transform:
+            image = self.transform(image)
+        if self.target_transform:
+            label = self.target_transform(label)
+        return image, label
+
+
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,3"
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
@@ -89,6 +125,7 @@ parser.add_argument('--sample_count', default=1, type=int) # default 1
 
 parser.add_argument('--unlearn_count', default=-1, type=int) # default 1
 parser.add_argument('--req_index', default=-1, type=int) # default 1
+parser.add_argument('--per_1k', default=False, type=bool)
 
 ####### RMIA parameters:
 parser.add_argument('--gamma', default=2., type=float, help='threshold value for RMIA')
@@ -260,9 +297,12 @@ if __name__ == "__main__":
         exit(0)
 
     unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
+    unlearn_idx = [int(i) for i in unlearn_idx]
     if args.unlearn_count > 0:
-        # unlearn_idx = unlearn_idx[:args.unlearn_count]
-        unlearn_idx = unlearn_idx[1000* args.req_index:args.unlearn_count]
+        if args.per_1k:
+            unlearn_idx = unlearn_idx[1000* args.req_index:args.unlearn_count]
+        else:
+            unlearn_idx = unlearn_idx[:args.unlearn_count]
         print('--------------> evaluate on unlearn count: ', len(unlearn_idx))
 
     if args.one_hot:
@@ -359,6 +399,34 @@ if __name__ == "__main__":
 
             advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, sample_count=1, ratio=120., add_noise=False, unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device)
 
+        elif args.dataset == 'tinynet':
+            print('Tine ImageNet!')
+            in_chan = 3
+            tinynet_flag = True
+            args.num_classes = 200
+
+            transform_test = transforms.Compose([
+                transforms.ToTensor(),
+                # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
+
+            transform_adv = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+
+            trainset_all = load_dataset('Maysee/tiny-imagenet', split='train')
+            trainset = basicDataset(trainset_all, transform=transform_test, target_transform=None)
+            print('trainset: ', len(trainset))
+            train_loader = torch.utils.data.DataLoader(trainset, batch_size=256, shuffle=True, num_workers=1)
+
+            testset_all = load_dataset('Maysee/tiny-imagenet', split='valid')
+            testset = basicDataset(testset_all, transform=transform_test, target_transform=None)
+            print('testset: ', len(testset))
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=256, shuffle=False, num_workers=1)
+
+            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, sample_count=1, ratio=120., add_noise=False, unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device) ### add_noise=False
+
+
         else:
             print('mnist!')
             in_chan = 1
@@ -366,9 +434,16 @@ if __name__ == "__main__":
             testset = get_dataset('mnist', 'test')
 
         unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
+        unlearn_idx = [int(i) for i in unlearn_idx]
+        remain_indices = list(set(range(len(trainset))) - set(unlearn_idx))
         if args.unlearn_count > 0:
-            # unlearn_idx = unlearn_idx[:args.unlearn_count]
-            unlearn_idx = unlearn_idx[1000* args.req_index:args.unlearn_count]
+            if args.per_1k:
+                unlearn_idx_all = unlearn_idx[:args.unlearn_count]
+                unlearn_idx = unlearn_idx[1000* args.req_index:args.unlearn_count]
+                remain_indices = list(set(range(len(trainset))) - set(unlearn_idx_all))
+            else:
+                unlearn_idx = unlearn_idx[:args.unlearn_count]
+                remain_indices = list(set(range(len(trainset))) - set(unlearn_idx))
             print('--------------> evaluate on unlearn count: ', len(unlearn_idx))
 
 
@@ -377,7 +452,6 @@ if __name__ == "__main__":
         print('initial len of trainset: ', len(trainset))  
 
         ### remove the unlearned images from the trainset
-        remain_indices = list(set(range(len(trainset))) - set(unlearn_idx))
         trainset_filtered = torch.utils.data.Subset(trainset, remain_indices)
         print('len of filtered trainset: ', len(trainset_filtered))  
 
@@ -464,6 +538,9 @@ if __name__ == "__main__":
                 elif clip_flag:
                     net = ResNet18(concat_sv=concat_sv, in_chan=in_chan, device=device, clip=args.convsn, clip_concat=args.catsn, clip_flag=True, bn=bn_flag, bn_clip=bn_clip, bn_hard=bn_hard, clip_steps=clip_steps, bn_count=steps_count, clip_outer=clip_outer_flag, clip_opt_iter=opt_iter, summary=True, writer=None, save_info=False, outer_iters=outer_iters, outer_steps=outer_steps)
 
+            elif args.model == 'VGG': 
+                net = VGG('VGG19', in_chan=in_chan, num_classes=args.num_classes, tinynet=tinynet_flag)
+
             elif args.model == 'DLA':
                 if orig_flag:
                     net = DLA_orig(in_chan=in_chan, bn=bn_flag, bn_clip=bn_clip, bn_hard=bn_hard, clip_linear=False, bn_count=steps_count, device=device)
@@ -528,32 +605,41 @@ if __name__ == "__main__":
             print('retain_len: ', retain_len)
 
 
+            # eval_results = evaluation.RMIA(
+            #     model=net,
+            #     remain_loader=remainloader,
+            #     forget_loader=forgetloader,
+            #     test_loader=trainloader, ### a concat of train and test set
+            #     device=device,
+            #     one_hot=args.one_hot,
+
+            #     logits_out=args.one_hot, ### the output is softmax
+            # )
+
             eval_results = evaluation.RMIA(
                 model=net,
-                remain_loader=remainloader,
-                forget_loader=forgetloader,
                 test_loader=trainloader, ### a concat of train and test set
                 device=device,
                 one_hot=args.one_hot,
-
                 logits_out=args.one_hot, ### the output is softmax
             )
+
 
             extra_params = {"taylor_m": 0.6, "taylor_n": 4}
 
             all_true_labels = eval_results["test_targets"]
-            remain_true_labels = eval_results["remain_targets"]
-            forget_true_labels = eval_results["forget_targets"]
+            # remain_true_labels = eval_results["remain_targets"]
+            # forget_true_labels = eval_results["forget_targets"]
 
-            all_remain_logits = eval_results["remain_likelihood"]
-            all_remain_likelihood = convert_signals(all_remain_logits, remain_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
-            all_forget_logits = eval_results["forget_likelihood"]
-            all_forget_likelihood = convert_signals(all_forget_logits, forget_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
+            # all_remain_logits = eval_results["remain_likelihood"]
+            # all_remain_likelihood = convert_signals(all_remain_logits, remain_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
+            # all_forget_logits = eval_results["forget_likelihood"]
+            # all_forget_likelihood = convert_signals(all_forget_logits, forget_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
 
             all_logits = eval_results["test_likelihood"]
             all_likelihood = convert_signals(all_logits, all_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
             print('likelihood shape: ', all_likelihood.shape)
-            print('remain likelihood: ', all_remain_likelihood)
+            # print('remain likelihood: ', all_remain_likelihood)
 
             all_test_likelihood = all_likelihood[-test_len:]
             if args.trials < 0:
@@ -564,18 +650,20 @@ if __name__ == "__main__":
             additional_name = str(trial) + '/LRs_' + str(step_size) + '_lr_' + str(args.lr) + '/'
 
             if args.unlearn_count > 0:
-                # additional_name += f'req_{args.req_index}/'
-                additional_name += f'req_{args.req_index}_1k/'
+                if args.per_1k:
+                    additional_name += f'req_{args.req_index}_1k/'
+                else:
+                    additional_name += f'req_{args.req_index}/'
 
             path = outdir + additional_name
             if not os.path.exists(path):
                 os.makedirs(path)
 
-            df_remain = pd.DataFrame({'remain_likelihood': all_remain_likelihood.cpu().numpy()})
-            df_remain.to_csv(outdir + additional_name + str(args.epoch) + '_remain_likelihood_' + args.prob_method + '.csv')
+            # df_remain = pd.DataFrame({'remain_likelihood': all_remain_likelihood.cpu().numpy()})
+            # df_remain.to_csv(outdir + additional_name + str(args.epoch) + '_remain_likelihood_' + args.prob_method + '.csv')
 
-            df_forget = pd.DataFrame({'forget_likelihood': all_forget_likelihood.cpu().numpy()})
-            df_forget.to_csv(outdir + additional_name + str(args.epoch) + '_forget_likelihood_' + args.prob_method + '.csv')
+            # df_forget = pd.DataFrame({'forget_likelihood': all_forget_likelihood.cpu().numpy()})
+            # df_forget.to_csv(outdir + additional_name + str(args.epoch) + '_forget_likelihood_' + args.prob_method + '.csv')
 
             df_test = pd.DataFrame({'test_likelihood': all_test_likelihood.cpu().numpy()})
             df_test.to_csv(outdir + additional_name + str(args.epoch) + '_test_likelihood_' + args.prob_method + '.csv')
@@ -583,6 +671,7 @@ if __name__ == "__main__":
 
             if args.one_hot:
                 reference_mat_np = np.zeros((reference_mat.shape[0], len(trainset)))
+                print('reference mat np shape: ', reference_mat.shape)
                 for idx in range(reference_mat.shape[0]):
                     reference_mat_np[idx] = copy.deepcopy(convert_signals(torch.tensor(reference_mat[idx]).float().to(device), all_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=True).cpu().numpy())
                 reference_mat = reference_mat_np
@@ -776,8 +865,10 @@ if __name__ == "__main__":
 
         if args.unlearn_count > 0:
             outdir += 'LRs_' + str(step_size) + '_lr_' + str(args.lr) + '/'
-            # additional_name += f'req_{args.req_index}_'
-            additional_name += f'req_{args.req_index}_1k_'
+            if args.per_1k:
+                additional_name += f'req_{args.req_index}_1k_'
+            else:
+                additional_name += f'req_{args.req_index}_'
 
         print('saving to: ', outdir)
         if not os.path.exists(outdir):
