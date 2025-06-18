@@ -33,7 +33,7 @@ echo "job is starting on `hostname`"
 # srun python main_val_jobsubmit.py --dataset cifar --seed 1
 # srun python main_jobsubmit.py --dataset $1 --method $2 --mode $3 --seed $4 --steps $5 --model $6 ##### The one used for all simultaneously
 # srun python train/Empirical/train_vanilla.py --method orig --mode wBN --seed 1 ##### The one used for all simultaneously
-srun python build_advdataset.py --method $1 --mode $2 --seed $3 --convsn $4 --widen_factor $5 --arch $6 --lr $7 --dataset $8 --model_path $9 --epoch ${10} --norm_cond ${11} --attack ${12} ##### The one used for all simultaneously
+srun python build_advdataset.py --method $1 --mode $2 --seed $3 --convsn $4 --widen_factor $5 --arch $6 --lr $7 --dataset $8 --model_path $9 --epoch ${10} --attack ${11} ##### The one used for all simultaneously
 
 # srun python main_val_jobsubmit_others.py
 # srun python main_val_farnia.py
