@@ -1,5 +1,8 @@
 import os
 import argparse
+from helper import get_data
+import pandas as pd
+import time
 
 
 parser = argparse.ArgumentParser(description='Submit batch jobs for unlearning experiments')
@@ -32,9 +35,8 @@ parser.add_argument('--model_path', default=None, type=str)
 parser.add_argument('--model_count', default=1, type=int)
 parser.add_argument('--trials', default=1, type=int)
 parser.add_argument('--mask_path', default=None, type=str)
-
-parser.add_argument('--inclusion_mat_path', default='~/Amun/keep_files/keep_m128_d60000_s0.csv', type=str)
-parser.add_argument('--reference_mat', default='/work/hdd/bcwm/aebrahimpour/amun/logs/correct/scratch/cifar_unnorm/unlearn/reference/ResNet18_orig__m128_d60000_s0_160_prob_matrix_logits_onehot.pt', type=str) ### cifar-18
+parser.add_argument('--inclusion_mat_path', default='keep_files/keep_m128_d60000_s0.csv', type=str)
+parser.add_argument('--reference_mat', default='logs/scratch/cifar_ResNet18/unlearn/reference/ResNet18_orig__m128_d60000_s0_160_prob_matrix_logits_onehot.pt', type=str) ### cifar-18
 
 args = parser.parse_args()
 print('!!!!!!!! use_remain: ', args.remain)
@@ -77,11 +79,10 @@ if __name__ == '__main__':
     else:
         seed_list = [args.seed]
 
-    # convsn_list = [1., 1.2, 0.8, 1.5, 0.5]
-    # convsn_list = [1., 1.2, 0.8]
-    # convsn_list = [0.8, 1.]
-    convsn_list = [1.]
+    if args.job_type == 'RMIA_ref':
+        seed_list = [1]  # for RMIA reference, we only need one seed
 
+    convsn_list = [1.]
     steps = 50 # this is clipBN steps
 
     method = args.method
@@ -123,7 +124,6 @@ if __name__ == '__main__':
                     for sms in source_model_seeds:
                         try:
                             if args.job_type == 'train':
-                                # command = f"sbatch job_submit.slurm --dataset {dataset} --method {method} --mode {mode} --seed {seed}"
                                 command = f"sbatch slurm_scripts/job_submit.slurm {method} {mode} {seed} {convsn} {args.widen_factor} {args.model} {args.lr} {args.dataset}"
                             elif args.job_type == 'advdata': # to perform adversarial attack and find adv examples and delta values
                                 command = f"sbatch slurm_scripts/job_eval_submit.slurm {method} {mode} {seed} {convsn} {args.widen_factor} {args.model} {args.lr} {args.dataset} {args.model_path} {args.epoch} {args.attack}"
@@ -168,7 +168,7 @@ if __name__ == '__main__':
 
                             elif args.job_type == 'RMIA':
                                 if sms < 0:
-                                    command = f"sbatch slurm_scripts/job_rmia_submit.slurm {method} {mode} {seed} {args.model} {args.dataset} {args.adv_images} {args.adv_delta} {args.unlearn_indices} {args.model_path} {args.epoch} {args.mask_path} {args.lr} {args.LRsteps} {args.trials} {args.inclusion_mat_path} {args.reference_mat} {args.norm_cond} {unlearn_count} {args.req_index}"
+                                    command = f"sbatch slurm_scripts/job_rmia_submit.slurm {method} {mode} {seed} {args.model} {args.dataset} {args.adv_images} {args.adv_delta} {args.unlearn_indices} {args.model_path} {args.epoch} {args.mask_path} {args.lr} {args.LRsteps} {args.trials} {args.inclusion_mat_path} {args.reference_mat} {unlearn_count} {args.req_index}"
                                 else:
                                     if args.adv_images is not None and args.adv_delta is not None:
                                         adv_images_parts = args.adv_images.split('/adv_data/')
@@ -179,10 +179,6 @@ if __name__ == '__main__':
                                     else:
                                         adv_images = None
                                         adv_delta = None
-
-
-                                    # if 'retrain' in args.model_path:
-                                    #     command = f"sbatch job_mia_submit.slurm {method} {mode} {seed} {args.model} {args.dataset} {adv_images} {adv_delta} {args.unlearn_indices} {args.model_path}{sms} {args.epoch} {args.mask_path}"
 
                                     args.unlearn_method = args.model_path.split('unlearn/')[1].split('/')[0]
 
@@ -207,12 +203,37 @@ if __name__ == '__main__':
 
                                     print('model path: ', model_path)
 
-                                    command = f"sbatch slurm_scripts/job_rmia_submit.slurm {method} {mode} {seed} {args.model} {args.dataset} {adv_images} {adv_delta} {args.unlearn_indices} {model_path} {args.epoch} {args.mask_path} {args.lr} {args.LRsteps} {args.trials} {args.inclusion_mat_path} {args.reference_mat} {args.norm_cond} {unlearn_count} {args.req_index}"
+                                    command = f"sbatch slurm_scripts/job_rmia_submit.slurm {method} {mode} {seed} {args.model} {args.dataset} {adv_images} {adv_delta} {args.unlearn_indices} {model_path} {args.epoch} {args.mask_path} {args.lr} {args.LRsteps} {args.trials} {args.inclusion_mat_path} {args.reference_mat} {unlearn_count} {args.req_index}"
 
                             elif args.job_type == 'RMIA_ref':
-                                command = f"sbatch slurm_scripts/job_rmia_ref_submit.slurm {method} {mode} {seed} {args.model} {args.dataset} {args.adv_images} {args.adv_delta} {args.unlearn_indices} {args.model_path} {args.epoch} {args.mask_path} {args.lr} {args.LRsteps} {args.trials} {args.inclusion_mat_path} {args.norm_cond}"
+                                command = f"sbatch slurm_scripts/job_rmia_ref_submit.slurm {method} {mode} {args.model} {args.dataset} {args.model_path} {args.epoch} {args.trials} {args.inclusion_mat_path}"
 
                             elif args.job_type == 'advunlearn':
+                                if args.unlearn_method == 'reference':
+                                    if args.dataset == 'cifar':
+                                        dataset_size = 60000
+                                    elif args.dataset == 'tinynet':
+                                        dataset = 110000
+
+                                    keep = get_data(dataset_size=dataset_size)
+                                    df = pd.DataFrame(keep)
+                                    outdir = 'keep_files'
+                                    if not os.path.exists(outdir):
+                                        os.makedirs(outdir)
+                                    filename = f'{outdir}/keep_m128_d{dataset_size}_s0.csv'
+                                    df.to_csv(filename, index=False)
+
+                                    file_flag = False
+                                    while not file_flag:
+                                        try:
+                                            tmp = pd.read_csv(filename, header=0).values
+                                            print('seed: 0', tmp[0].shape)
+                                            file_flag = True
+                                        except:
+                                            print('sleeping for 2 seconds to wait for indices file to be readable')
+                                            time.sleep(2.0)
+                                            continue
+
                                 if sms < 0:
                                     command = f"sbatch slurm_scripts/job_adv_unlearn_submit.slurm {method} {mode} {seed} {convsn} {args.model} {args.lr} {args.dataset} {args.adv_images} {args.adv_delta} {args.unlearn_indices} {args.model_path} {args.unlearn_method} {args.mask_path} {args.LRsteps} {args.epoch} {args.remain} {args.attack} {args.salun_ratio} {req_mode} {args.ablation_test}"
                                 else:
@@ -240,32 +261,6 @@ if __name__ == '__main__':
                                         adv_delta = adv_delta_parts[0][:-1] + f'{other_sms}/adv_data/' + adv_delta_parts[1]
 
                                         command = f"sbatch slurm_scripts/job_adv_unlearn_submit.slurm {method} {mode} {seed} {convsn} {args.model} {args.lr} {args.dataset} {adv_images} {adv_delta} {args.unlearn_indices} {args.model_path}{sms} {args.unlearn_method} {args.mask_path} {args.LRsteps} {args.epoch} {args.remain} {args.attack} {args.salun_ratio} {req_mode} {args.ablation_test}"
-
-                            elif args.job_type == 'advunlearn2':
-                                if sms < 0:
-                                    command = f"sbatch slurm_scripts/job_adv_unlearn_submit_2.slurm {method} {mode} {seed} {convsn} {args.model} {args.lr} {args.dataset} {args.adv_images} {args.adv_delta} {args.unlearn_indices} {args.model_path} {args.unlearn_method} {args.mask_path} {args.LRsteps} {args.epoch} {args.remain} {args.attack} {args.salun_ratio} {req_mode}"
-                                else:
-                                    if not args.others_adv:
-                                        adv_images_parts = args.adv_images.split('/adv_data/')
-                                        adv_images = adv_images_parts[0][:-1] + f'{sms}/adv_data/' + adv_images_parts[1]
-
-                                        adv_delta_parts = args.adv_delta.split('/adv_data/')
-                                        adv_delta = adv_delta_parts[0][:-1] + f'{sms}/adv_data/' + adv_delta_parts[1]
-
-                                        command = f"sbatch slurm_scripts/job_adv_unlearn_submit_2.slurm {method} {mode} {seed} {convsn} {args.model} {args.lr} {args.dataset} {adv_images} {adv_delta} {args.unlearn_indices} {args.model_path}{sms} {args.unlearn_method} {args.mask_path} {args.LRsteps} {args.epoch} {args.remain} {args.attack} {args.salun_ratio} {req_mode}"
-                                    else:
-                                        other_sms = sms*10
-                                        if other_sms == 1000:
-                                            other_sms = 1
-
-                                        adv_images_parts = args.adv_images.split('/adv_data/')
-                                        adv_images = adv_images_parts[0][:-1] + f'{other_sms}/adv_data/' + adv_images_parts[1]
-
-                                        adv_delta_parts = args.adv_delta.split('/adv_data/')
-                                        adv_delta = adv_delta_parts[0][:-1] + f'{other_sms}/adv_data/' + adv_delta_parts[1]
-
-                                        command = f"sbatch slurm_scripts/job_adv_unlearn_submit_2.slurm {method} {mode} {seed} {convsn} {args.model} {args.lr} {args.dataset} {adv_images} {adv_delta} {args.unlearn_indices} {args.model_path}{sms} {args.unlearn_method} {args.mask_path} {args.LRsteps} {args.epoch} {args.remain} {args.attack} {args.salun_ratio} {req_mode}"
-
 
                             print(command)
                             os.system(command)

@@ -15,31 +15,33 @@ import pandas as pd
 import random
 from torch.utils.data import Dataset
 
+from helper import CustomImageDataset
 
-class CustomImageDataset(Dataset):
-    def __init__(self, labels_file, imgs_path, unlearn_indices=None, transform=None, target_transform=None):
-        self.imgs_path = imgs_path
-        self.images_delta_df = pd.read_csv(labels_file)
-        self.img_labels = self.images_delta_df['adv_pred'].values[unlearn_indices]
-        self.img_deltas = self.images_delta_df['delta_norm'].values[unlearn_indices]
-        self.transform = transform # feature transformation
-        self.target_transform = target_transform # label transformation
-        self.adv_images = torch.load(self.imgs_path, map_location=torch.device('cpu'))
-        self.adv_images = self.adv_images[unlearn_indices]
-        self.adv_images = self.adv_images.detach().numpy()
 
-    def __len__(self):
-        return len(self.img_labels)
-
-    def __getitem__(self, idx):
-        image = self.adv_images[idx]
-        image = image.transpose(1, 2, 0)
-        label = self.img_labels[idx]
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
+# class CustomImageDataset(Dataset):
+#     def __init__(self, labels_file, imgs_path, unlearn_indices=None, transform=None, target_transform=None):
+#         self.imgs_path = imgs_path
+#         self.images_delta_df = pd.read_csv(labels_file)
+#         self.img_labels = self.images_delta_df['adv_pred'].values[unlearn_indices]
+#         self.img_deltas = self.images_delta_df['delta_norm'].values[unlearn_indices]
+#         self.transform = transform # feature transformation
+#         self.target_transform = target_transform # label transformation
+#         self.adv_images = torch.load(self.imgs_path, map_location=torch.device('cpu'))
+#         self.adv_images = self.adv_images[unlearn_indices]
+#         self.adv_images = self.adv_images.detach().numpy()
+# 
+#     def __len__(self):
+#         return len(self.img_labels)
+# 
+#     def __getitem__(self, idx):
+#         image = self.adv_images[idx]
+#         image = image.transpose(1, 2, 0)
+#         label = self.img_labels[idx]
+#         if self.transform:
+#             image = self.transform(image)
+#         if self.target_transform:
+#             label = self.target_transform(label)
+#         return image, label
 
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,3"

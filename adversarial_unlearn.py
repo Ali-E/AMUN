@@ -25,203 +25,7 @@ import copy
 from torch.utils.data import Dataset
 from torchvision.io import read_image
 
-
-def l1_regularization(model):
-    params_vec = []
-    for param in model.parameters():
-        params_vec.append(param.view(-1))
-    return torch.linalg.norm(torch.cat(params_vec), ord=1)
-
-
-def discretize(x):
-    return torch.round(x * 255) / 255
-
-
-def FGSM_perturb(x, y, model=None, bound=None, criterion=None):
-    device = model.parameters().__next__().device
-    model.zero_grad()
-    x_adv = x.detach().clone().requires_grad_(True).to(device)
-    pred = model(x_adv)
-    loss = criterion(pred, y)
-    loss.backward()
-    grad_sign = x_adv.grad.data.detach().sign()
-    x_adv = x_adv + grad_sign * bound
-    x_adv = discretize(torch.clamp(x_adv, 0.0, 1.0))
-    return x_adv.detach()
-
-
-def expand_model(model):
-    last_fc_name = None
-    last_fc_layer = None
-
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            last_fc_name = name
-            last_fc_layer = module
-
-    if last_fc_name is None:
-        raise ValueError("No Linear layer found in the model.")
-
-    num_classes = last_fc_layer.out_features
-
-    bias = last_fc_layer.bias is not None
-
-    new_last_fc_layer = nn.Linear(
-        in_features=last_fc_layer.in_features,
-        out_features=num_classes + 1,
-        bias=bias,
-        device=last_fc_layer.weight.device,
-        dtype=last_fc_layer.weight.dtype,
-    )
-
-    with torch.no_grad():
-        new_last_fc_layer.weight[:-1] = last_fc_layer.weight
-        if bias:
-            new_last_fc_layer.bias[:-1] = last_fc_layer.bias
-
-    parts = last_fc_name.split(".")
-    current_module = model
-    for part in parts[:-1]:
-        current_module = getattr(current_module, part)
-    setattr(current_module, parts[-1], new_last_fc_layer)
-
-
-def imshow(img, path=None):
-    npimg = img.numpy()
-    plt.imshow(np.transpose(npimg, (1, 2, 0)))
-    # plt.show()
-    plt.savefig(path)
-
-
-class simpleDataset(Dataset):
-    def __init__(self, data, labels, transform=None, target_transform=None):
-        self.data = data
-        self.labels = labels
-        self.transform = transform
-        self.target_transform = target_transform
-
-        self.data = self.data.detach().cpu().numpy()
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        image = self.data[idx]
-        image = image.transpose(1, 2, 0)
-        label = self.labels[idx]
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
-
-
-class CustomImageDataset(Dataset):
-    def __init__(self, labels_file, imgs_path, unlearn_indices=None, transform=None, target_transform=None, num_classes=10, ablation_RL=False, ablation_RS=False, ablation_forgetset_RL=False, ablation_forgetset_AdvL=False, image_orig=None):#, device='cuda'):
-        self.imgs_path = imgs_path
-        self.num_classes = num_classes
-        self.ablation_RL = ablation_RL
-        self.ablation_forgetset_RL = ablation_forgetset_RL
-        self.images_delta_df = pd.read_csv(labels_file)
-        self.img_labels = self.images_delta_df['adv_pred'].values[unlearn_indices]
-        self.img_deltas = self.images_delta_df['delta_norm'].values[unlearn_indices]
-        self.transform = transform # feature transformation
-        self.target_transform = target_transform # label transformation
-        if not ablation_RS and not ablation_forgetset_RL and not ablation_forgetset_AdvL:
-            self.adv_images = torch.load(self.imgs_path, map_location=torch.device('cpu'))
-            self.adv_images = self.adv_images[unlearn_indices]
-        else:
-            self.adv_images = image_orig
-
-        if ablation_RL or ablation_forgetset_RL:
-            self.true_labels = self.images_delta_df['label'].values[unlearn_indices]
-
-        if ablation_RS:
-            ## choose adv images to be img_delta radius away from adv_images. In this case
-            ## the adv_images images are the same as the original images not adv images.
-            rand_vectors = torch.randn_like(self.adv_images)
-            rand_vectors_norm = torch.norm(rand_vectors, p=2, dim=(1,2,3), keepdim=False)
-            unit_vectors = rand_vectors / rand_vectors_norm.view(-1, 1, 1, 1)
-            scaled_unit_vectors = unit_vectors * torch.tensor(self.img_deltas).view(-1, 1, 1, 1)
-            check_norms = torch.norm(scaled_unit_vectors, p=2, dim=(1,2,3), keepdim=False)
-            self.adv_images = self.adv_images + scaled_unit_vectors
-            self.adv_images = torch.clamp(self.adv_images, min=0, max=1)
-
-        self.adv_images = self.adv_images.detach().numpy()
-
-    def __len__(self):
-        return len(self.img_labels)
-
-    def __getitem__(self, idx):
-        image = self.adv_images[idx]
-        image = image.transpose(1, 2, 0)
-        label = self.img_labels[idx]
-        if self.ablation_RL or self.ablation_forgetset_RL:
-            ## choose a random label other than the true label and adv label:
-            label = np.random.choice([i for i in range(self.num_classes) if i != self.true_labels[idx] and i != self.img_labels[idx]]) 
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
-
-
-class RLDataset(Dataset):
-    def __init__(self, forgetset, new_classes=None, num_classes=10, noise_level=0.01, add_noise=False):
-        self.image_set = forgetset
-        self.add_noise = add_noise
-        self.noise_level = noise_level
-        self.num_classes = num_classes
-        self.new_classes = new_classes
-
-    def __len__(self):
-        return len(self.image_set)
-
-    def __getitem__(self, idx):
-        image = self.image_set[idx][0]
-        if self.new_classes is not None:
-            label = self.new_classes[idx]
-        else:
-            true_label = self.image_set[idx][1]
-            label = np.random.choice([i for i in range(self.num_classes) if i != true_label]) # random label
-
-        if self.add_noise:
-            noise = torch.randn_like(image) * self.noise_level
-            adv_images = self.adv_images + noise
-            adv_images = torch.clamp(adv_images, min=0, max=1)
-
-        return image, label
-
-
-class basicDataset(Dataset):
-    def __init__(self, data, transform=None, target_transform=None):
-        self.data = data
-        self.transform = transform
-        self.target_transform = target_transform
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        if self.data.shape[-1] == 2:
-            image_in = self.data[idx]['image']
-            image = copy.deepcopy(np.asarray(image_in))
-            if len(image.shape) == 2:
-                image = copy.deepcopy(np.stack((image, image, image), axis=2))
-        else:
-            print('shape is 1')
-            image_in = self.data[idx][0]
-
-        if self.data.shape[-1] == 2:
-            label = self.data[idx]['label']
-        else:
-            label = self.data[idx][1]
-
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
+from helper import *
 
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,3"
@@ -284,6 +88,7 @@ parser.add_argument('--outer_iters', default=1, type=int)
 
 args = parser.parse_args()
 
+
 if args.ablation_test > 0:
     if args.ablation_test == 1:
         args.ablation_RL = True
@@ -305,18 +110,14 @@ if args.ablation_test > 0:
         args.ablation_advset = True
         print('ablation advset')
 
+if args.unlearn_method != 'reference':
+    unlearn_indices_check = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
+    count_unlearn = len(unlearn_indices_check)
+    print('count_unlearn: ', count_unlearn)
 
-unlearn_indices_check = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
-# if args.unlearn_count > 0:
-#     unlearn_indices_check = unlearn_indices_check[args.start_idx: args.start_idx + args.unlearn_count]
-count_unlearn = len(unlearn_indices_check)
-
-print('count_unlearn: ', count_unlearn)
 print('requested mode: ', args.req_mode)
 print('!!!!!!!!! salun ratio: ', args.salun_ratio)
-
 print('model: ', args.model)
-
 
 dataset_name = args.dataset + '_' + args.model
 if args.dataset == 'tinynet':
@@ -350,7 +151,6 @@ if args.unlearn_method in ['advonly_sa', 'amun_sa', 'salun']:
     args.mask_path = f'/scratch/bcwm/aebrahimpour/amun/logs/correct/scratch/{dataset_name}/unlearn/genmask/{count_unlearn}/unl_idx_{indices_seed}/{model_name}/salun_mask/with_{args.salun_ratio}.pt'
     print('mask path: ', args.mask_path)
 
-
 if args.unlearn_method == 'advonly_sa':
     args.unlearn_method = 'advonly'
 elif args.unlearn_method == 'amun_sa':
@@ -360,8 +160,6 @@ elif args.unlearn_method == 'salun':
 elif args.unlearn_method == 'amun_l1':
     args.unlearn_method = 'amun'
     args.alpha_l1 = 0.0005
-
-
 
 save_checkpoints = args.save_checkpoints
 if save_checkpoints == 1:
@@ -375,17 +173,8 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('==========', device)
 
 if device == 'cuda':
-    # net = torch.nn.DataParallel(net)
     print('chosen: ', device)
     cudnn.benchmark = True
-
-# if args.adv_images is None:
-#     print('adv images not provided!')
-#     exit(0)
-# 
-# if args.adv_delta is None:
-#     print('adv delta not provided!')
-#     exit(0)
 
 base_path_df = pd.read_csv('path_file.csv')
 print(base_path_df)
@@ -430,7 +219,8 @@ def train(epoch, optimizer, scheduler, criterion, unlearn_method='adv', writer=N
 
     print('\ninside train function :')
     print('trainset :', len(trainset) )
-    print('unl idx :', len(unlearn_idx) )
+    if args.unlearn_method != 'reference':
+        print('unl idx :', len(unlearn_idx) )
 
     if unlearn_method == 'adv' or unlearn_method == 'advonly':
         if args.ablation_RS or args.ablation_forgetset_AdvL or args.ablation_forgetset_RL:
@@ -457,7 +247,6 @@ def train(epoch, optimizer, scheduler, criterion, unlearn_method='adv', writer=N
             forgetset_new = torch.utils.data.Subset(trainset_new, unlearn_idx)
             forget_loader_1 = torch.utils.data.DataLoader(forgetset_new, batch_size=1, shuffle=False, num_workers=1)
 
-            # model = copy.deepcopy(net).to(device)
             net.zero_grad()
             net.eval()
 
@@ -534,41 +323,42 @@ def train(epoch, optimizer, scheduler, criterion, unlearn_method='adv', writer=N
         trainset_combined = forgetset
 
     elif unlearn_method == 'reference':
-        if len(unlearn_idx) == 5000:
-            included_indices_file = 'keep_files/keep_m128_d55000_s0.csv'
-        elif len(unlearn_idx) == 10000:
-            included_indices_file = 'keep_files/keep_m128_d105000_s0.csv'
-        elif len(unlearn_idx) == 25000:
-            included_indices_file = 'keep_files/keep_m128_d35000_s0.csv'
+        if args.dataset == 'cifar':
+            included_indices_file = 'keep_files/keep_m128_d60000_s0.csv'
+        elif args.dataset == 'tinynet':
+            included_indices_file = 'keep_files/keep_m128_d110000_s0.csv'
         else:
-            print('unknown unlearn_idx count!')
+            print('unknown dataset!')
             exit(0)
 
-        if args.use_all_ref:
-            if args.dataset == 'cifar':
-                included_indices_file = 'keep_files/keep_m128_d60000_s0.csv'
-            elif args.dataset == 'tinynet':
-                included_indices_file = 'keep_files/keep_m128_d110000_s0.csv'
-            else:
-                print('unknown dataset!')
-                exit(0)
-
-
-        included_indices_all = pd.read_csv(included_indices_file, header=0).values
-        print('seed: ', args.seed, included_indices_all.shape)
-        included_indices = included_indices_all[args.seed]
-
         trainset_combined = torch.utils.data.ConcatDataset([trainset, testset])
-        if epoch == 0:
-            print('row id:', args.seed)
-            print('sum included: ', included_indices.sum())
-            print('len of combined trainset: ', len(trainset_combined))  
-        inc_indices = [int(i) for i in np.array(list(range(len(trainset_combined))))[included_indices]]
-        trainset_included = torch.utils.data.Subset(trainset_combined, inc_indices)
-        if epoch == 0:
-            print('len of included trainset: ', len(trainset_included))  
-        trainset_combined = trainset_included
 
+        file_flag = False
+        counter = 0
+        while not file_flag and counter < 10:
+            try:
+                included_indices_all = pd.read_csv(included_indices_file, header=0).values
+                print('seed: ', args.seed, included_indices_all.shape)
+                included_indices = included_indices_all[args.seed]
+                if epoch == 0:
+                    print('row id:', args.seed)
+                    print('sum included: ', included_indices.sum())
+                    print('len of combined trainset: ', len(trainset_combined))  
+                inc_indices = [int(i) for i in np.array(list(range(len(trainset_combined))))[included_indices]]
+                trainset_included = torch.utils.data.Subset(trainset_combined, inc_indices)
+                if epoch == 0:
+                    print('len of included trainset: ', len(trainset_included))  
+                trainset_combined = trainset_included
+                file_flag = True
+            except:
+                print('sleeping for 2 seconds to wait for indices file to be readable')
+                time.sleep(2.0)
+                counter += 1
+                continue
+
+        if file_flag is False:
+            print('file not readable after 5 attempts!')
+            exit(0)
 
     print('transet_combined len: ', len(trainset_combined))
     trainloader = torch.utils.data.DataLoader(trainset_combined, shuffle=True, batch_size=args.batch_size, num_workers=1)
@@ -606,10 +396,6 @@ def train(epoch, optimizer, scheduler, criterion, unlearn_method='adv', writer=N
     if unlearn_method == 'BE':
         expand_model(net)
 
-    # net.eval() 
-    # tr_loss, tr_acc = test(trainloader, epoch, criterion, writer, mode='train right before', model_path=None)
-    # net.train()
-
     ii = 0
     if args.ablation_advset:
         if args.dataset == 'cifar':
@@ -623,28 +409,8 @@ def train(epoch, optimizer, scheduler, criterion, unlearn_method='adv', writer=N
         if epoch == 0 and batch_idx == 0:
             print('inputs shape: ', inputs.shape)
         inputs, targets = inputs.float().to(device), targets.to(device)
-
-        ###### plot images and print labels:
-        if args.ablation_advset and ii < 10:
-            # if args.dataset == 'cifar':
-            #     names_labels = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-            # elif args.dataset == 'tinynet':
-            #     names_labels = [str(i) for i in range(200)]
-            # fig, axs = plt.subplots(ncols=10, figsize=(20, 3))
-            # fig.suptitle('first batch of the trainloader')
-            # for ii in range(10):
-            axs[ii].imshow((inputs[ii]).permute(1, 2, 0).detach().cpu()); axs[ii].axis('off')
-            axs[ii].set_title(f'Label: {names_labels[targets[ii]]}')
-            ii += 1
-            # fig.savefig(outdir + f'_{args.dataset}_1stBatch_e' + str(epoch) + '.png')
-            # plt.close()
-        #############################################
-                
-
         optimizer.zero_grad()
         outputs = net(inputs)
-
-
 
         if unlearn_method == 'BS':
             test_model.eval()
@@ -703,41 +469,23 @@ def train(epoch, optimizer, scheduler, criterion, unlearn_method='adv', writer=N
     if args.alpha_l1 > 0.:
         args.alpha_l1 = (2-2*epoch/args.epochs) * args.alpha_l1
 
-
-    # writer.add_scalar('train/acc', 100.*correct/total, epoch)
-    # writer.add_scalar('train/loss', train_loss/(batch_idx+1), epoch)
-    # writer.add_scalar('train/time', tot_time, epoch)
-
     print('train - acc', 100.*correct/total)
     print('train - loss', train_loss/(batch_idx+1))
     
-    # net.eval() 
-    # tr_loss, tr_acc = test(trainloader, epoch, criterion, writer, mode='train right after', model_path=None)
-    # net.train()
-
     scheduler.step()
 
     print('Saving..')
     state = {
         'net': net.state_dict(),
         'epoch': epoch,
-        # 'scheduler': scheduler.state_dict(),
-        # 'optimizer': optimizer.state_dict(),
     }
 
-    # if not os.path.isdir('checkpoint'):
-    #     os.mkdir('checkpoint')
     model_path_i = model_path + ".%d" % (epoch)
     if args.unlearn_method == 'retrain' or args.unlearn_method == 'reference' or args.ablation_advset:
         if epoch in [60, 80, 100,120,140,160,180,200]:
             torch.save(state, model_path_i)
     else:
         torch.save(state, model_path_i)
-
-    # directory = model_path + '_sd_' + str(args.seed) + '_ep_' + str(epoch) + '.pth'
-    # print(directory, save_checkpoints)
-    # if epoch >=15 and save_checkpoints:
-    #     torch.save(state, directory)
 
     net.eval()
 
@@ -769,34 +517,7 @@ def test(loader, epoch, criterion, writer=None, mode='test', model_path="./check
         for batch_idx, (inputs, targets) in enumerate(loader):
             inputs, targets = inputs.float().to(device), targets.to(device)
             outputs = net(inputs)
-
-            ###### plot images and print labels:
-            if plot_images and args.ablation_advset and ii < 10:
-                # if args.dataset == 'cifar':
-                #     names_labels = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-                # elif args.dataset == 'tinynet':
-                #     names_labels = [str(i) for i in range(200)]
-
-                predictions = torch.argmax(outputs, dim=1)
-                # fig, axs = plt.subplots(ncols=10, figsize=(20, 3))
-                # fig2, axs2 = plt.subplots(ncols=10, figsize=(20, 3))
-                # fig.suptitle('first batch of the trainloader with correct labels')
-                # fig2.suptitle('first batch of the trainloader with output labels')
-                # for ii in range(10):
-                axs[ii].imshow((inputs[ii]).permute(1, 2, 0).detach().cpu()); axs[ii].axis('off')
-                axs[ii].set_title(f'Label: {names_labels[targets[ii]]}')
-
-                axs2[ii].imshow((inputs[ii]).permute(1, 2, 0).detach().cpu()); axs2[ii].axis('off')
-                axs2[ii].set_title(f'Label: {names_labels[predictions.int()[ii]]}')
-                ii += 1
-
-                # fig.savefig(outdir + f'{args.dataset}_test_correct_1stBatch_e' + str(epoch) + '.png')
-                # fig2.savefig(outdir + f'{args.dataset}_test_out_1stBatch_e' + str(epoch) + '.png')
-                # plt.close('all')
-            #############################################
-
             loss = criterion(outputs, targets)
-
             test_loss += loss.item()
             _, predicted = outputs.max(1)
             total += targets.size(0)
@@ -818,9 +539,6 @@ def test(loader, epoch, criterion, writer=None, mode='test', model_path="./check
                 'net': net.state_dict(),
                 'acc': acc,
                 'epoch': epoch,
-                # 'scheduler': scheduler.state_dict(),
-                # 'optimizer': optimizer.state_dict(),
-                # 'lr': scheduler.get_last_lr(),
             }
             if not os.path.isdir('checkpoint'):
                 os.mkdir('checkpoint')
@@ -873,10 +591,9 @@ if __name__ == "__main__":
         print('unknown mode!')
         exit(0)
 
-    unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
-    unlearn_idx = [int(i) for i in unlearn_idx]
-    # if args.unlearn_count > 0:
-    #     unlearn_idx = unlearn_idx[args.start_idx : args.start_idx + args.unlearn_count]
+    if args.unlearn_method != 'reference':
+        unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
+        unlearn_idx = [int(i) for i in unlearn_idx]
 
     seed_in = args.seed ##### !!!!! Do not use with more than one seed! some of the args gets changed during the first run @ToDo fix this!
     if seed_in == -1:
@@ -950,9 +667,6 @@ if __name__ == "__main__":
             if args.unlearn_method != 'reference' and args.unlearn_method != 'retrain' and args.unlearn_method != 'genmask':
                 advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images,unlearn_indices=unlearn_idx, transform=transform_test, target_transform=None, num_classes=args.num_classes)#, device=device) ### 
 
-            # train_loader = load_train_data(img_size, randaug_magnitude, batch_size)
-            # val_loader = load_val_data(img_size, batch_size if not args.throughput else 32)
-
         elif args.dataset == 'tinynet':
             print('Tine ImageNet!')
             in_chan = 3
@@ -969,11 +683,7 @@ if __name__ == "__main__":
             ])
 
             trainset_all = load_dataset('Maysee/tiny-imagenet', split='train')
-            # train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=1)
-
             testset_all = load_dataset('Maysee/tiny-imagenet', split='valid')
-            # test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=1)
-
 
             if args.ablation_RS or args.ablation_forgetset_AdvL or args.ablation_forgetset_RL:
                 trainset_RS = basicDataset(trainset_all, transform=transform_test, target_transform=None)
@@ -1009,9 +719,12 @@ if __name__ == "__main__":
             testset = get_dataset('mnist', 'test')
 
         indices_seed = args.unlearn_indices.split('/')[-1][:-4]
-        indices_count = len(unlearn_idx) # args.unlearn_indices.split('/')[-2]
+        if args.unlearn_method != 'reference':
+            indices_count = len(unlearn_idx) # args.unlearn_indices.split('/')[-2]
+            args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}/{indices_count}/unl_idx_{indices_seed}/"
+        else:
+            args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}/"
 
-        args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}/{indices_count}/unl_idx_{indices_seed}/"
         if args.ablation_RL:
             args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}_RL/{indices_count}/unl_idx_{indices_seed}/"
         elif args.ablation_RS:
@@ -1032,14 +745,9 @@ if __name__ == "__main__":
         if args.amun_randadvset and (args.unlearn_method == 'amun' or args.unlearn_method == 'advonly'):
             args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}_rand/{indices_count}/unl_idx_{indices_seed}/"
 
-        # if args.unlearn_method == 'RL':
-        #     args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}_wrand_waug/{indices_count}/unl_idx_{indices_seed}/"
-
         if (args.unlearn_method == 'adv' or args.unlearn_method == 'amun') and args.req_mode == 'adaptive' and args.adaptive_lr:
             args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}_{args.adaptive_lr_factor}/{indices_count}/unl_idx_{indices_seed}/"
 
-        # args.outdir = f"/{dataset_name}/unlearn/{args.unlearn_method}_pgd10/{indices_count}/unl_idx_{indices_seed}/"
-        
         args.outdir = "scratch" + args.outdir
         args.outdir = base_path + args.outdir
 
@@ -1096,12 +804,13 @@ if __name__ == "__main__":
         prior_idx = []
         for req_idx in range(request_count):
 
-            unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
-            if len(unlearn_idx) != int(indices_count):
-                print('unlearn_idx count is not correct!')
-                exit(0)
+            if args.unlearn_method != 'reference':
+                unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
+                if len(unlearn_idx) != int(indices_count):
+                    print('unlearn_idx count is not correct!')
+                    exit(0)
 
-            unlearn_idx = [int(i) for i in unlearn_idx]
+                unlearn_idx = [int(i) for i in unlearn_idx]
 
             if args.req_mode == 'adaptive':
                 prior_idx = unlearn_idx[:int(args.unlearn_count * req_idx)]
@@ -1127,43 +836,20 @@ if __name__ == "__main__":
             if args.unlearn_method != 'reference' and args.unlearn_method != 'retrain' and args.unlearn_method != 'genmask':
                 print('advset: ', len(advset))
 
-            removed_classes = [trainset[i][1] for i in unlearn_idx]
-            df = pd.DataFrame({'unlearn_idx': unlearn_idx, 'removed_classes': removed_classes})
-            df.to_csv(outdir + 'unlearn_idx.csv')
+            if args.unlearn_method != 'reference':
+                removed_classes = [trainset[i][1] for i in unlearn_idx]
+                df = pd.DataFrame({'unlearn_idx': unlearn_idx, 'removed_classes': removed_classes})
+                df.to_csv(outdir + 'unlearn_idx.csv')
 
-            ### remove the unlearned images from the trainset
-            trainset_filtered = torch.utils.data.Subset(trainset, list(set(range(len(trainset))) - set(unlearn_idx) - set(prior_idx)))
-            print('len of filtered trainset: ', len(trainset_filtered))  
-            # print(trainset_filtered.report())
+                ### remove the unlearned images from the trainset
+                trainset_filtered = torch.utils.data.Subset(trainset, list(set(range(len(trainset))) - set(unlearn_idx) - set(prior_idx)))
+                print('len of filtered trainset: ', len(trainset_filtered))  
+                # print(trainset_filtered.report())
 
+                forgetset = torch.utils.data.Subset(trainset, unlearn_idx)
+                print('len of forget set: ', len(forgetset))  
 
-            # if args.dataset == 'tinynet':
-            #     forgetset_all = torch.utils.data.Subset(trainset_all, unlearn_idx)
-            #     forgetset = basicDataset(forgetset_all, transform=transform_train, target_transform=None)
-            # else:
-            forgetset = torch.utils.data.Subset(trainset, unlearn_idx)
-            print('len of forget set: ', len(forgetset))  
-            # print(forgetset.report())
-
-            # if args.unlearn_method == 'RL':
-            #     print('new forgetset for RL')
-            #     new_classes = []
-            #     for i in range(len(forgetset)):
-            #         _, true_label = forgetset[i]
-            #         random_label = np.random.choice([j for j in range(args.num_classes) if j != true_label])
-            #         new_classes.append(random_label)
-
-            #     if args.dataset == 'tinynet':
-            #         trainset_tmp = basicDataset(trainset_all, transform=transform_adv, target_transform=None)
-            #     elif args.dataset == 'cifar':
-            #         trainset_tmp = torchvision.datasets.CIFAR10( root='./data', train=True, download=True, transform=transform_adv) ### transofrm=transform_train
-            #     forgetset = torch.utils.data.Subset(trainset_tmp, unlearn_idx)
-
-
-            # advset_filtered = torch.utils.data.Subset(advset, unlearn_idx)
-            # print('len of advset set: ', len(advset_filtered))  
-
-            remainloader = torch.utils.data.DataLoader(trainset_filtered, shuffle=False, batch_size=args.batch_size, num_workers=1)
+                remainloader = torch.utils.data.DataLoader(trainset_filtered, shuffle=False, batch_size=args.batch_size, num_workers=1)
 
             if args.unlearn_method == 'retrain' or args.unlearn_method == 'FT' or args.unlearn_method == 'l1' or args.unlearn_method == 'advonly' or args.unlearn_method == 'RL' or args.unlearn_method == 'advonly_sa' or args.unlearn_method == 'advonly_others':
                 if args.use_remain_sample:
@@ -1192,7 +878,8 @@ if __name__ == "__main__":
 
             # trainloader = torch.utils.data.DataLoader(trainset, shuffle=True, batch_size=128, num_workers=1)
             testloader = torch.utils.data.DataLoader(testset, shuffle=False, batch_size=args.batch_size, num_workers=1)
-            forgetloader = torch.utils.data.DataLoader(forgetset, shuffle=False, batch_size=args.batch_size, num_workers=1)
+            if args.unlearn_method != 'reference':
+                forgetloader = torch.utils.data.DataLoader(forgetset, shuffle=False, batch_size=args.batch_size, num_workers=1)
             
             if args.unlearn_method != 'retrain' and args.unlearn_method != 'reference' and args.unlearn_method != 'genmask':
                 advloader = torch.utils.data.DataLoader(advset, shuffle=False, batch_size=args.batch_size, num_workers=1)
@@ -1202,7 +889,6 @@ if __name__ == "__main__":
                 if args.model == 'ResNet18':
                     if orig_flag:
                         net = ResNet18_orig(in_chan=in_chan, bn=bn_flag, device=device, elu_flag=False, num_classes=args.num_classes)
-                        # net = ResNet18_orig(in_chan=in_chan, bn=bn_flag, bn_clip=bn_clip, bn_hard=bn_hard, clip_linear=False, bn_count=steps_count, device=device)
                     elif clip_flag:
                         net = ResNet18(concat_sv=concat_sv, in_chan=in_chan, device=device, clip=args.convsn, clip_concat=args.catsn, clip_flag=True, bn=bn_flag, bn_clip=bn_clip, bn_hard=bn_hard, clip_steps=clip_steps, bn_count=steps_count, clip_outer=clip_outer_flag, clip_opt_iter=opt_iter, summary=True, writer=writer, save_info=False, outer_iters=outer_iters, outer_steps=outer_steps, num_classes=args.num_classes)
 
@@ -1252,14 +938,19 @@ if __name__ == "__main__":
             tr_loss, tr_acc = 0., 0.
             print('-- test set:')
             ts_loss, ts_acc = test(testloader, 200, criterion, writer=writer, mode='test', model_path=None)
-            print('--- forget set:')
-            fs_loss, fs_acc = test(forgetloader, 200, criterion, writer=writer, mode='forget', model_path=None)
-            if args.unlearn_method != 'retrain' and args.unlearn_method != 'reference' and args.unlearn_method != 'genmask':
-                print('-- adv set:')
-                adv_loss, adv_acc = test(advloader, 200, criterion, writer=writer, mode='adv', model_path=None)
-            print('-- remain set:')
-            remain_loss, remain_acc = test(remainloader, 200, criterion, writer=writer, mode='remain', model_path=None)
-            remain_loss, remain_acc = 0., 0.
+
+            if args.unlearn_method != 'reference':
+                print('--- forget set:')
+                fs_loss, fs_acc = test(forgetloader, 200, criterion, writer=writer, mode='forget', model_path=None)
+                if args.unlearn_method != 'retrain' and args.unlearn_method != 'reference' and args.unlearn_method != 'genmask':
+                    print('-- adv set:')
+                    adv_loss, adv_acc = test(advloader, 200, criterion, writer=writer, mode='adv', model_path=None)
+                print('-- remain set:')
+                remain_loss, remain_acc = test(remainloader, 200, criterion, writer=writer, mode='remain', model_path=None)
+            else:
+                fs_loss, fs_acc = 0., 0.
+                adv_loss, adv_acc = 0., 0.
+                remain_loss, remain_acc = 0., 0.
 
             tr_loss_list.append(tr_loss)
             tr_acc_list.append(tr_acc)
@@ -1350,19 +1041,26 @@ if __name__ == "__main__":
                     exit(0)
 
                 print('total time: ', time.time() - time_start)
-                print('saving results to ...', outdir)
                 
                 # if epoch % 5 == 0 and False:
-                if True:
+                save_model_cond = True
+                if args.unlearn_method == 'retrain' or args.unlearn_method == 'reference' or args.ablation_advset:
+                    save_model_cond = epoch == T_max - 1
+                if save_model_cond:
                     print('-- test set:')
                     ts_loss, ts_acc = test(testloader, epoch, criterion, writer=writer, model_path=model_path_test, mode='test', plot_images=True)
-                    print('--- forget set:')
-                    fs_loss, fs_acc = test(forgetloader, epoch, criterion, writer=writer, model_path=model_path_test, mode='forget')
-                    if args.unlearn_method != 'retrain' and args.unlearn_method != 'reference':
-                        print('-- adv set:')
-                        adv_loss, adv_acc = test(advloader, epoch, criterion, writer=writer, model_path=model_path_test, mode='adv')
-                    print('-- remain set:')
-                    remain_loss, remain_acc = test(remainloader, epoch, criterion, writer=writer, model_path=model_path_test, mode='remain')
+                    if args.unlearn_method != 'reference':
+                        print('--- forget set:')
+                        fs_loss, fs_acc = test(forgetloader, epoch, criterion, writer=writer, model_path=model_path_test, mode='forget')
+                        if args.unlearn_method != 'retrain' and args.unlearn_method != 'reference':
+                            print('-- adv set:')
+                            adv_loss, adv_acc = test(advloader, epoch, criterion, writer=writer, model_path=model_path_test, mode='adv')
+                        print('-- remain set:')
+                        remain_loss, remain_acc = test(remainloader, epoch, criterion, writer=writer, model_path=model_path_test, mode='remain')
+                    else:
+                        fs_loss, fs_acc = 0., 0.
+                        adv_loss, adv_acc = 0., 0.
+                        remain_loss, remain_acc = 0., 0.
 
                     if ts_acc == best_acc:
                         best_keeping_list.append(1)
@@ -1377,6 +1075,8 @@ if __name__ == "__main__":
                     fs_acc_list.append(fs_acc)
                     re_loss_list.append(remain_loss)
                     re_acc_list.append(remain_acc)
+
+                    print('saving results to ...', outdir)
 
             print('Saving Last..')
             state = {

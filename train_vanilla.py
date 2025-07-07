@@ -16,8 +16,6 @@ from torch.utils.data import Dataset
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 import copy
 
-from vit_pytorch import ViT
-
 import random
 import numpy as np
 import time

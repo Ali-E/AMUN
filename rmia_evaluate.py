@@ -1,10 +1,7 @@
 import torch
 import json
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
-import matplotlib.pyplot as plt
-import torch.utils
 import torchvision
 import torchvision.transforms as transforms
 from datasetslocal import get_dataset
@@ -19,84 +16,10 @@ import pandas as pd
 import random
 from sklearn.metrics import roc_auc_score
 from sklearn import metrics
-from torch.utils.data import Dataset
-from scipy.stats import norm
 import copy
-
+from helper import basicDataset, CustomImageDataset
 from signals import convert_signals
 
-
-class CustomImageDataset(Dataset):
-    def __init__(self, labels_file, imgs_path, sample_count=2, ratio=120., unlearn_indices=None, add_noise=True, transform=None, target_transform=None):#, device='cuda'):
-        self.imgs_path = imgs_path
-        self.images_delta_df = pd.read_csv(labels_file)
-        self.img_labels = self.images_delta_df['adv_pred'].values[unlearn_indices]
-        self.img_deltas = self.images_delta_df['delta_norm'].values[unlearn_indices]
-        self.transform = transform # feature transformation
-        self.target_transform = target_transform # label transformation
-        self.adv_images = torch.load(self.imgs_path, map_location=torch.device('cpu'))
-        self.adv_images = self.adv_images[unlearn_indices]
-
-        if add_noise:
-            adv_images_list = []
-            for _ in range(sample_count):
-                noise = torch.rand_like(self.adv_images) * torch.tensor(self.img_deltas/ratio).view(-1, 1, 1, 1)
-                adv_images = self.adv_images + noise
-                adv_images = torch.clamp(adv_images, min=0, max=1)
-                adv_images_list.append(adv_images)
-            self.adv_images = torch.cat(adv_images_list, dim=0)
-
-        self.adv_images = self.adv_images.detach().numpy()
-
-    def __len__(self):
-        return len(self.img_labels)
-
-    def __getitem__(self, idx):
-        image = self.adv_images[idx]
-        image = image.transpose(1, 2, 0)
-        label = self.img_labels[idx]
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
-
-
-class basicDataset(Dataset):
-    def __init__(self, data, transform=None, target_transform=None):
-        self.data = data
-        self.transform = transform
-        self.target_transform = target_transform
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        if self.data.shape[-1] == 2:
-            image_in = self.data[idx]['image']
-            image = copy.deepcopy(np.asarray(image_in))
-            # print(image.shape)
-            if len(image.shape) == 2:
-                image = copy.deepcopy(np.stack((image, image, image), axis=2))
-            # image = image.transpose(2, 0, 1)
-        else:
-            print('shape is 1')
-            image_in = self.data[idx][0]
-
-        if self.data.shape[-1] == 2:
-            label = self.data[idx]['label']
-        else:
-            label = self.data[idx][1]
-
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
-
-
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,3"
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--dataset', default='cifar', help='dataset')
@@ -116,12 +39,6 @@ parser.add_argument('--adv_images', default=None, type=str)
 parser.add_argument('--adv_delta', default=None, type=str)
 parser.add_argument('--source_model_path', default=None, type=str)
 parser.add_argument('--mask_path', default=None, type=str)
-
-parser.add_argument('--unnormalize', default=True, type=bool)
-parser.add_argument('--norm_cond', default='unnorm', help='unnorm or norm for transform')
-
-parser.add_argument('--noise_ratio', default=120, type=int) # default 120
-parser.add_argument('--sample_count', default=1, type=int) # default 1
 
 parser.add_argument('--unlearn_count', default=-1, type=int) # default 1
 parser.add_argument('--req_index', default=-1, type=int) # default 1
@@ -151,10 +68,6 @@ args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('==========', device)
 
-if args.norm_cond == 'norm':
-    args.unnormalize = False
-print('!!!!!!!!! unnormalized: ', args.unnormalize)
-
 if device == 'cuda':
     # net = torch.nn.DataParallel(net)
     print('chosen: ', device)
@@ -167,17 +80,6 @@ if args.adv_images is None:
 if args.adv_delta is None:
     print('adv delta not provided!')
     exit(0)
-
-
-def compute_rmia_offline(x_priors, z_priors, x_likelihood, z_likelihood, gamma, a_factor):
-    all_ratio_z = z_likelihood / z_priors
-    score_RMIA_list = []
-    for idx in range(all_remain_likelihood.shape[0]):
-        ratio_x = x_likelihood[idx] / x_priors[idx]
-        count_RMIA = (ratio_x/all_ratio_z > gamma).sum()
-        score_RMIA = count_RMIA / len(all_ratio_z)
-        score_RMIA_list.append(score_RMIA)
-    return score_RMIA_list
 
 
 def compute_rmia_online(all_probs, inclusion_mat, all_likelihood, gamma, exclusive=True):
@@ -204,37 +106,6 @@ def compute_rmia_online(all_probs, inclusion_mat, all_likelihood, gamma, exclusi
         score_RMIA = count_RMIA / len(all_ratio_z)
         score_RMIA_list.append(score_RMIA)
     return score_RMIA_list
-
-
-def compute_lira_conf(probs, eps=1e-7):
-    # print('probs: ', probs)
-    # print('isnan: ', np.isnan(probs).sum())
-    confs = np.log((probs + eps)/(1 + eps -probs)) 
-    # print('confs: ', confs)
-    # print('isnan: ', np.isnan(confs).sum())
-    return confs
-
-
-def compute_lira_online(all_probs, inclusion_mat, all_likelihood):
-    score_lira_list = []
-    for idx in range(all_likelihood.shape[0]):
-        included_indices = inclusion_mat[:, idx]
-        included_indices = np.arange(included_indices.shape[0])[included_indices]
-        non_included_indices = list(set(list(range(included_indices.shape[0]))) - set(included_indices))
-        in_probs = all_probs[included_indices]
-        out_probs = all_probs[non_included_indices]
-
-        in_confs = compute_lira_conf(in_probs)
-        out_confs = compute_lira_conf(out_probs)
-
-        mu_in, sigma_in = norm.fit(in_confs)
-        mu_out, sigma_out = norm.fit(out_confs)
-        p_in = norm.pdf(all_likelihood[idx], mu_in, sigma_in)
-        p_out = norm.pdf(all_likelihood[idx], mu_out, sigma_out)
-        score_lira = p_in / p_out
-        score_lira_list.append(score_lira)
-
-    return score_lira_list
 
 
 def test(net, loader, criterion):
@@ -322,11 +193,6 @@ if __name__ == "__main__":
     roc_remain_test_list = []
     roc_forget_remain_list = []
 
-
-    tpr_01_forget_test_list = []
-    tpr_01_remain_test_list = []
-    tpr_01_forget_remain_list = []
-
     correctness_list = []
     confidence_list = []
     entropy_list = []
@@ -380,24 +246,13 @@ if __name__ == "__main__":
             print('cifar!')
             in_chan = 3
 
-            if args.unnormalize:
-                transform_test = transforms.Compose([
-                    transforms.ToTensor(),
-                ])
-            else:
-                transform_test = transforms.compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-                ])
-
-            transform_adv = transforms.Compose([
+            transform_test = transforms.Compose([
                 transforms.ToTensor(),
             ])
 
             trainset = torchvision.datasets.CIFAR10( root='./data', train=True, download=True, transform=transform_test)
             testset = torchvision.datasets.CIFAR10( root='./data', train=False, download=True, transform=transform_test)
-
-            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, sample_count=1, ratio=120., add_noise=False, unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device)
+            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, unlearn_indices=unlearn_idx, transform=transform_test, target_transform=None)#, device=device)
 
         elif args.dataset == 'tinynet':
             print('Tine ImageNet!')
@@ -406,11 +261,6 @@ if __name__ == "__main__":
             args.num_classes = 200
 
             transform_test = transforms.Compose([
-                transforms.ToTensor(),
-                # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            ])
-
-            transform_adv = transforms.Compose([
                 transforms.ToTensor(),
             ])
 
@@ -423,9 +273,7 @@ if __name__ == "__main__":
             testset = basicDataset(testset_all, transform=transform_test, target_transform=None)
             print('testset: ', len(testset))
             test_loader = torch.utils.data.DataLoader(testset, batch_size=256, shuffle=False, num_workers=1)
-
-            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, sample_count=1, ratio=120., add_noise=False, unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device) ### add_noise=False
-
+            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, ratio=120., add_noise=False, unlearn_indices=unlearn_idx, transform=transform_test, target_transform=None)#, device=device) ### add_noise=False
 
         else:
             print('mnist!')
@@ -446,34 +294,24 @@ if __name__ == "__main__":
                 remain_indices = list(set(range(len(trainset))) - set(unlearn_idx))
             print('--------------> evaluate on unlearn count: ', len(unlearn_idx))
 
-
         print('==> Building model..')
         print('-----------------------------------------------------------------')
         print('initial len of trainset: ', len(trainset))  
-
         ### remove the unlearned images from the trainset
         trainset_filtered = torch.utils.data.Subset(trainset, remain_indices)
         print('len of filtered trainset: ', len(trainset_filtered))  
-
         forgetset = torch.utils.data.Subset(trainset, unlearn_idx)
         print('len of forget set: ', len(forgetset))  
-
         print('final len of trainset: ', len(trainset))  
         print('-----------------------------------------------------------------')
 
-
-        if args.use_all_ref:
-            trainset = torch.utils.data.ConcatDataset([trainset, testset]) 
-        else:
-            trainset = torch.utils.data.ConcatDataset([trainset_filtered, testset])
+        trainset = torch.utils.data.ConcatDataset([trainset, testset]) 
         trainloader = torch.utils.data.DataLoader(trainset, shuffle=False, batch_size=128, num_workers=1) ### used by reference models
-
         testloader = torch.utils.data.DataLoader(testset, shuffle=False, batch_size=128, num_workers=1)
         forgetloader = torch.utils.data.DataLoader(forgetset, shuffle=False, batch_size=128, num_workers=1)
         # forgetloader_single = torch.utils.data.DataLoader(forgetset, shuffle=False, batch_size=1, num_workers=1)
         advloader = torch.utils.data.DataLoader(advset, shuffle=False, batch_size=128, num_workers=1)
         remainloader = torch.utils.data.DataLoader(trainset_filtered, shuffle=False, batch_size=128, num_workers=1)
-        
 
         if args.trials < 0:
             trial_val = -args.trials
@@ -510,11 +348,7 @@ if __name__ == "__main__":
                 print('after: ', reference_mat.shape)
 
 
-
         outdir = args.source_model_path
-        # if args.mask_path is not None and args.mask_path != 'None':
-        #     outdir = outdir + '_mask_' + str(args.mask_path).split('with_')[1][:-3] + '_'
-
         print('------------> outdir: ', outdir)
         print('------------> epoch: ', args.epoch)
 
@@ -541,11 +375,9 @@ if __name__ == "__main__":
             elif args.model == 'VGG': 
                 net = VGG('VGG19', in_chan=in_chan, num_classes=args.num_classes, tinynet=tinynet_flag)
 
-            elif args.model == 'DLA':
-                if orig_flag:
-                    net = DLA_orig(in_chan=in_chan, bn=bn_flag, bn_clip=bn_clip, bn_hard=bn_hard, clip_linear=False, bn_count=steps_count, device=device)
-                elif clip_flag:
-                    net = DLA(concat_sv=concat_sv, in_chan=in_chan, device=device, clip=args.convsn, clip_concat=args.catsn, clip_flag=True, bn=bn_flag, bn_clip=bn_clip, bn_hard=bn_hard, clip_steps=clip_steps, init_delay=0, bn_count=steps_count, clip_outer=clip_outer_flag, clip_opt_iter=opt_iter, summary=True, writer=None, outer_iters=outer_iters, outer_steps=outer_steps)
+            else:
+                print('unknown model!')
+                exit(0)
 
             net = net.to(device)
             net = nn.DataParallel(net) ### adds the "module." prefix to the state_dict keys
@@ -604,18 +436,6 @@ if __name__ == "__main__":
             print('forget_len: ', forget_len)
             print('retain_len: ', retain_len)
 
-
-            # eval_results = evaluation.RMIA(
-            #     model=net,
-            #     remain_loader=remainloader,
-            #     forget_loader=forgetloader,
-            #     test_loader=trainloader, ### a concat of train and test set
-            #     device=device,
-            #     one_hot=args.one_hot,
-
-            #     logits_out=args.one_hot, ### the output is softmax
-            # )
-
             eval_results = evaluation.RMIA(
                 model=net,
                 test_loader=trainloader, ### a concat of train and test set
@@ -624,28 +444,16 @@ if __name__ == "__main__":
                 logits_out=args.one_hot, ### the output is softmax
             )
 
-
             extra_params = {"taylor_m": 0.6, "taylor_n": 4}
 
             all_true_labels = eval_results["test_targets"]
-            # remain_true_labels = eval_results["remain_targets"]
-            # forget_true_labels = eval_results["forget_targets"]
-
-            # all_remain_logits = eval_results["remain_likelihood"]
-            # all_remain_likelihood = convert_signals(all_remain_logits, remain_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
-            # all_forget_logits = eval_results["forget_likelihood"]
-            # all_forget_likelihood = convert_signals(all_forget_logits, forget_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
-
             all_logits = eval_results["test_likelihood"]
             all_likelihood = convert_signals(all_logits, all_true_labels, args.prob_method, args.temp, extra=extra_params, one_hot=args.one_hot)
             print('likelihood shape: ', all_likelihood.shape)
-            # print('remain likelihood: ', all_remain_likelihood)
 
             all_test_likelihood = all_likelihood[-test_len:]
             if args.trials < 0:
                 all_test_likelihood = all_likelihood[nonincluded_indices]
-
-            # all_likelihood = torch.cat([all_remain_likelihood, all_forget_likelihood, all_test_likelihood], dim=0)
 
             additional_name = str(trial) + '/LRs_' + str(step_size) + '_lr_' + str(args.lr) + '/'
 
@@ -659,15 +467,8 @@ if __name__ == "__main__":
             if not os.path.exists(path):
                 os.makedirs(path)
 
-            # df_remain = pd.DataFrame({'remain_likelihood': all_remain_likelihood.cpu().numpy()})
-            # df_remain.to_csv(outdir + additional_name + str(args.epoch) + '_remain_likelihood_' + args.prob_method + '.csv')
-
-            # df_forget = pd.DataFrame({'forget_likelihood': all_forget_likelihood.cpu().numpy()})
-            # df_forget.to_csv(outdir + additional_name + str(args.epoch) + '_forget_likelihood_' + args.prob_method + '.csv')
-
             df_test = pd.DataFrame({'test_likelihood': all_test_likelihood.cpu().numpy()})
             df_test.to_csv(outdir + additional_name + str(args.epoch) + '_test_likelihood_' + args.prob_method + '.csv')
-
 
             if args.one_hot:
                 reference_mat_np = np.zeros((reference_mat.shape[0], len(trainset)))
@@ -677,20 +478,8 @@ if __name__ == "__main__":
                 reference_mat = reference_mat_np
             #### must do the same change for eval_results above
 
-            """
-            all_priors = reference_mat.mean(axis=1)
-            forget_prior = reference_mat.mean(axis=1)[unlearn_idx]
-            remain_prior = reference_mat.mean(axis=1)[remain_indices]
-            test_prior = reference_mat.mean(axis=1)[:-test_len]
-            z_priors = reference_mat.mean(axis=1)
-            # score_RMIA_test = compute_rmia(test_prior, forget_prior, all_test_likelihood.cpu().numpy(), all_forget_likelihood.cpu().numpy(), args.gamma)
-            """
-
-
             if args.mia_method == 'rmia':
                 score_RMIA_all = compute_rmia_online(reference_mat, inclusion_mat[:reference_mat.shape[0],:], all_likelihood.cpu().numpy(), args.gamma, exclusive=args.exclusive_flag)
-            elif args.mia_method == 'lira':
-                score_RMIA_all = compute_lira_online(reference_mat, inclusion_mat[:reference_mat.shape[0],:], all_likelihood.cpu().numpy())
             else:
                 print('unknown mia method!')
                 exit(0)
@@ -757,7 +546,6 @@ if __name__ == "__main__":
                 # samples_remain = torch.utils.data.Subset(trainset_filtered, samples_remain_idx)
                 samples_remain_rmia = score_RMIA_remain[samples_remain_idx]
 
-
                 # compute the area under the curve score for each pair of samples above:
                 # forget vs test
                 forget_and_test = np.concatenate([samples_forget_rmia, samples_test_rmia])
@@ -767,16 +555,6 @@ if __name__ == "__main__":
                 ft_fpr, ft_tpr, ft_thresholds = metrics.roc_curve(forget_and_test_labels, forget_and_test)
                 roc_forget_test_list.append(roc_auc_score_ft)
 
-                # find tpr at fpr = 0.1%:
-                fpr_01_idx = np.where(ft_fpr <= 0.001)[0][-1]
-                ft_tpr_01 = ft_tpr[fpr_01_idx]
-                tpr_01_forget_test_list.append(ft_tpr_01)
-                print('tpr at fpr = 0.1%: ', ft_tpr_01)
-
-                # ft_fpr_dict[seed_sub] = list(ft_fpr)
-                # ft_tpr_dict[seed_sub] = list(ft_tpr)
-                # ft_thresholds_dict[seed_sub] = list(ft_thresholds)
-
                 # forget vs remain
                 forget_and_remain = np.concatenate([samples_forget_rmia, samples_remain_rmia])
                 forget_remain_score_list.append(forget_and_remain)
@@ -784,16 +562,6 @@ if __name__ == "__main__":
                 roc_auc_score_fr = roc_auc_score(forget_and_remain_labels, forget_and_remain)
                 fr_fpr, fr_tpr, fr_thresholds = metrics.roc_curve(forget_and_remain_labels, forget_and_remain)
                 roc_forget_remain_list.append(roc_auc_score_fr)
-
-                # find tpr at fpr = 0.1%:
-                fpr_01_idx = np.where(fr_fpr <= 0.001)[0][-1]
-                fr_tpr_01 = fr_tpr[fpr_01_idx]
-                tpr_01_forget_remain_list.append(fr_tpr_01)
-                print('tpr at fpr = 0.1%: ', fr_tpr_01)
-
-                # fr_fpr_dict[seed_sub] = list(fr_fpr)
-                # fr_tpr_dict[seed_sub] = list(fr_tpr)
-                # fr_thresholds_dict[seed_sub] = list(fr_thresholds)
 
                 # remain vs test
                 remain_and_test = np.concatenate([samples_remain_rmia, samples_test_rmia])
@@ -803,22 +571,11 @@ if __name__ == "__main__":
                 rt_fpr, rt_tpr, rt_thresholds = metrics.roc_curve(remain_and_test_labels, remain_and_test)
                 roc_remain_test_list.append(roc_auc_score_rt)
 
-                # find tpr at fpr = 0.1%:
-                fpr_01_idx = np.where(rt_fpr <= 0.001)[0][-1]
-                rt_tpr_01 = rt_tpr[fpr_01_idx]
-                tpr_01_remain_test_list.append(rt_tpr_01)
-                print('tpr at fpr = 0.1%: ', rt_tpr_01)
-
-                # rt_fpr_dict[seed_sub] = list(rt_fpr)
-                # rt_tpr_dict[seed_sub] = list(rt_tpr)
-                # rt_thresholds_dict[seed_sub] = list(rt_thresholds)
-
                 test_acc_list.append(test_acc)
                 forget_acc_list.append(forget_acc)
                 remain_acc_list.append(remain_acc)
                 adv_acc_list.append(adv_acc)
                 seed_list.append(seed_sub)
-
             
             avg_remain_test_scores = np.array(remain_test_score_list).mean(axis=0)
             avg_forget_test_scores = np.array(forget_test_score_list).mean(axis=0)
@@ -847,9 +604,6 @@ if __name__ == "__main__":
             'auc_ft': roc_forget_test_list,
             'auc_fr': roc_forget_remain_list,
             'auc_rt': roc_remain_test_list,
-            'tpr_01_ft': tpr_01_forget_test_list,
-            'tpr_01_fr': tpr_01_forget_remain_list,
-            'tpr_01_rt': tpr_01_remain_test_list
         })
 
         avg_ft_df = pd.DataFrame(avg_ft_dict)
@@ -881,38 +635,8 @@ if __name__ == "__main__":
         avg_fr_df.to_csv(outdir + additional_name + str(args.epoch) + '_avg_fr_roc_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.csv')
         avg_rt_df.to_csv(outdir + additional_name + str(args.epoch) + '_avg_rt_roc_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.csv')
 
-        # with open(outdir + additional_name + str(args.epoch) + '_ft_fpr_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(ft_fpr_dict, f)
-
-        # with open(outdir + additional_name + str(args.epoch) + '_ft_tpr_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(ft_tpr_dict, f)
-
-        # with open(outdir + additional_name + str(args.epoch) + '_ft_thresholds_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(ft_thresholds_dict, f)
-
-
-        # with open(outdir + additional_name + str(args.epoch) + '_fr_fpr_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(fr_fpr_dict, f)
-
-        # with open(outdir + additional_name + str(args.epoch) + '_fr_tpr_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(fr_tpr_dict, f)
-
-        # with open(outdir + additional_name + str(args.epoch) + '_fr_thresholds_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(fr_thresholds_dict, f)
-
-
-        # with open(outdir + additional_name + str(args.epoch) + '_rt_fpr_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(rt_fpr_dict, f)
-
-        # with open(outdir + additional_name + str(args.epoch) + '_rt_tpr_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(rt_tpr_dict, f)
-
-        # with open(outdir + additional_name + str(args.epoch) + '_rt_thresholds_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.json', 'w') as f:
-        #     json.dump(rt_thresholds_dict, f)
-
-
         df_avg = df.mean(axis=0)
-        df_avg_final = df_avg[['forget_acc', 'remain_acc', 'test_acc', 'auc_ft', 'auc_fr', 'auc_rt', 'tpr_01_ft', 'tpr_01_fr', 'tpr_01_rt']]
+        df_avg_final = df_avg[['forget_acc', 'remain_acc', 'test_acc', 'auc_ft', 'auc_fr', 'auc_rt']]
         # df_avg_final['avg'] = df_avg_final.mean(axis=0)
         df_avg_final['adv_acc'] = df_avg['adv_acc']
         df_avg_final.to_csv(outdir + additional_name + str(args.epoch) + '_avg_acc_' + args.mia_method + '_' +  args.prob_method + '_exc' + str(args.exclusive_flag) + '.csv')
@@ -923,4 +647,3 @@ if __name__ == "__main__":
         df = pd.DataFrame({'score_RMIA_all': rmia_scores})
         df.to_csv(outdir + additional_name + str(args.epoch) + '_' + args.mia_method + '_online_scores_avg_' + args.prob_method + '_exc' + str(args.exclusive_flag) + '.csv')
         print('saving to : ', outdir + additional_name + str(args.epoch) + '_' + args.mia_method + '_online_scores_avg_' + args.prob_method + '_exc' + str(args.exclusive_flag) + '.csv')
-

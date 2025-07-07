@@ -5,7 +5,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1    # <- match to OMP_NUM_THREADS
 #SBATCH --partition=gpuA40x4      # <- or one of: gpuA100x4 gpuA40x4 gpuA100x8 gpuMI100x8
-#SBATCH --account=bcwm-delta-gpu
+#SBATCH --account=betf-delta-gpu
 #SBATCH --job-name=compute_ref_matrix_rmia
 #SBATCH --time=04:00:00      # hh:mm:ss for the job
 ##SBATCH --constraint="scratch"
@@ -33,7 +33,7 @@ echo "job is starting on `hostname`"
 # srun python main_val_jobsubmit.py --dataset cifar --seed 1
 # srun python main_jobsubmit.py --dataset $1 --method $2 --mode $3 --seed $4 --steps $5 --model $6 ##### The one used for all simultaneously
 # srun python train/Empirical/train_vanilla.py --method orig --mode wBN --seed 1 ##### The one used for all simultaneously
-srun python rmia_reference.py --method $1 --mode $2 --seed $3 --model $4 --dataset $5 --adv_images $6 --adv_delta $7 --unlearn_indices $8 --source_model_path $9 --epoch ${10} --mask_path ${11} --lr ${12} --LRsteps ${13} --trials ${14} --inclusion_mat ${15} --norm_cond ${16}  ##### The one used for all simultaneously
+srun python rmia_reference.py --method $1 --mode $2 --model $3 --dataset $4 --source_model_path $5 --epoch $6 --trials $7 --inclusion_mat $8  ##### The one used for all simultaneously
 
 # srun python main_val_jobsubmit_others.py
 # srun python main_val_farnia.py

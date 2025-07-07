@@ -1,14 +1,10 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
-import matplotlib.pyplot as plt
-import torch.utils
 import torchvision
 import torchvision.transforms as transforms
 from datasetslocal import get_dataset
 from datasets import load_dataset
-import os
 import argparse
 import evaluation
 from models import *
@@ -16,69 +12,22 @@ from models.resnet_orig import ResNet18_orig
 import pandas as pd
 from models.vgg import VGG
 import random
-from torch.utils.data import Dataset
+from helper import basicDataset
 
-
-class CustomImageDataset(Dataset):
-    def __init__(self, labels_file, imgs_path, sample_count=2, ratio=120., unlearn_indices=None, add_noise=True, transform=None, target_transform=None):#, device='cuda'):
-        self.imgs_path = imgs_path
-        self.images_delta_df = pd.read_csv(labels_file)
-        self.img_labels = self.images_delta_df['adv_pred'].values[unlearn_indices]
-        self.img_deltas = self.images_delta_df['delta_norm'].values[unlearn_indices]
-        self.transform = transform # feature transformation
-        self.target_transform = target_transform # label transformation
-        self.adv_images = torch.load(self.imgs_path, map_location=torch.device('cpu'))
-        self.adv_images = self.adv_images[unlearn_indices]
-
-        if add_noise:
-            adv_images_list = []
-            for _ in range(sample_count):
-                noise = torch.rand_like(self.adv_images) * torch.tensor(self.img_deltas/ratio).view(-1, 1, 1, 1)
-                adv_images = self.adv_images + noise
-                adv_images = torch.clamp(adv_images, min=0, max=1)
-                adv_images_list.append(adv_images)
-            self.adv_images = torch.cat(adv_images_list, dim=0)
-
-        self.adv_images = self.adv_images.detach().numpy()
-
-    def __len__(self):
-        return len(self.img_labels)
-
-    def __getitem__(self, idx):
-        image = self.adv_images[idx]
-        image = image.transpose(1, 2, 0)
-        label = self.img_labels[idx]
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
-
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,2,3"
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--dataset', default='cifar', help='dataset')
 parser.add_argument('--model', default='ResNet18', help='Deep Learning model to train')
 parser.add_argument('--method', default='catclip', help='clipping method (use orig for no clipping)')
 parser.add_argument('--mode', default='wBN', help='what to do with BN layers (leave empty for keeping it as it is)')
-parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
-parser.add_argument('--LRsteps', default=40, type=int, help='LR scheduler step')
-parser.add_argument('--epoch', default=200, type=int, help='LR scheduler step')
+parser.add_argument('--epoch', default=200, type=int, help='epoch to use for evaluation')
 parser.add_argument('--seed', default=1, type=int, help='seed value') # this seed corresponds to the different runs of the MIA evaluation on the same unlearned model
 parser.add_argument('--steps', default=50, type=int, help='setp count for clipping BN')
 parser.add_argument('--trials', default=1, type=int, help='traial value') # each trial corresponds to a different run of the unlearning method 
 # on a specific trained model. if the unlearning method does not involve randomness, then the trial value should be set to 1.
 
 parser.add_argument('--unlearn_indices', default=None, type=str)
-parser.add_argument('--adv_images', default=None, type=str)
-parser.add_argument('--adv_delta', default=None, type=str)
 parser.add_argument('--source_model_path', default=None, type=str)
-parser.add_argument('--mask_path', default=None, type=str)
-
-parser.add_argument('--unnormalize', default=True, type=bool)
-parser.add_argument('--norm_cond', default='unnorm', help='unnorm or norm for transform')
-
 parser.add_argument('--num_classes', default=10, type=int, help='number of classes in the dataset')
 
 ####### RMIA parameters:
@@ -101,22 +50,10 @@ args = parser.parse_args()
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('==========', device)
 
-if args.norm_cond == 'norm':
-    args.unnormalize = False
-print('!!!!!!!!! unnormalized: ', args.unnormalize)
-
 if device == 'cuda':
     # net = torch.nn.DataParallel(net)
     print('chosen: ', device)
     cudnn.benchmark = True
-
-if args.adv_images is None:
-    print('adv images not provided!')
-    exit(0)
-
-if args.adv_delta is None:
-    print('adv delta not provided!')
-    exit(0)
 
 print('model: ', args.model)
 print('dataset: ', args.dataset)
@@ -144,46 +81,7 @@ def test(net, loader, criterion):
     return test_loss/(batch_idx+1), 100.*correct/total
 
 
-class basicDataset(Dataset):
-    def __init__(self, data, transform=None, target_transform=None):
-        self.data = data
-        self.transform = transform
-        self.target_transform = target_transform
-
-    def __len__(self):
-        return len(self.data)
-
-    # def report(self):
-    #     print('reporting from basicDataset')
-    #     print(self.data.shape)
-
-    def __getitem__(self, idx):
-        if self.data.shape[-1] == 2:
-            image_in = self.data[idx]['image']
-            image = copy.deepcopy(np.asarray(image_in))
-            # print(image.shape)
-            if len(image.shape) == 2:
-                image = copy.deepcopy(np.stack((image, image, image), axis=2))
-            # image = image.transpose(2, 0, 1)
-        else:
-            print('shape is 1')
-            image_in = self.data[idx][0]
-
-        if self.data.shape[-1] == 2:
-            label = self.data[idx]['label']
-        else:
-            label = self.data[idx][1]
-
-        if self.transform:
-            image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
-
-
-
 if __name__ == "__main__":
-    print('mask: ', args.mask_path)
     method = args.method
     steps_count = args.steps  #### BN clip steps for hard clip
     concat_sv = False
@@ -219,14 +117,9 @@ if __name__ == "__main__":
         print('unknown mode!')
         exit(0)
 
-    unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
-    unlearn_idx = [int(i) for i in unlearn_idx]
-
     test_acc_list = []
     forget_acc_list = []
     remain_acc_list = []
-    adv_acc_list = []
-
     correctness_list = []
     confidence_list = []
     entropy_list = []
@@ -234,11 +127,7 @@ if __name__ == "__main__":
     prob_list = []
     seed_list = []
 
-    seed_in = args.seed
-    if seed_in == -2:
-        seed_in = [1,2]
-    else:
-        seed_in = [seed_in]
+    seed_in = [1]
     for seed in seed_in:
         print('seed.....', seed)
 
@@ -267,24 +156,12 @@ if __name__ == "__main__":
             print('cifar!')
             in_chan = 3
 
-            if args.unnormalize:
-                transform_test = transforms.Compose([
-                    transforms.ToTensor(),
-                ])
-            else:
-                transform_test = transforms.compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-                ])
-
-            transform_adv = transforms.Compose([
+            transform_test = transforms.Compose([
                 transforms.ToTensor(),
             ])
 
             trainset = torchvision.datasets.CIFAR10( root='./data', train=True, download=True, transform=transform_test)
             testset = torchvision.datasets.CIFAR10( root='./data', train=False, download=True, transform=transform_test)
-
-            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, ratio=120., unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device)
 
         elif args.dataset == 'tinynet':
             print('Tine ImageNet!')
@@ -293,11 +170,6 @@ if __name__ == "__main__":
             args.num_classes = 200
 
             transform_test = transforms.Compose([
-                transforms.ToTensor(),
-                # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            ])
-
-            transform_adv = transforms.Compose([
                 transforms.ToTensor(),
             ])
 
@@ -311,78 +183,39 @@ if __name__ == "__main__":
             print('testset: ', len(testset))
             test_loader = torch.utils.data.DataLoader(testset, batch_size=256, shuffle=False, num_workers=1)
 
-            advset = CustomImageDataset(labels_file=args.adv_delta, imgs_path=args.adv_images, ratio=120., unlearn_indices=unlearn_idx, transform=transform_adv, target_transform=None)#, device=device) ### add_noise=False
-
-
         else:
             print('mnist!')
             in_chan = 1
             trainset = get_dataset('mnist', 'train')
             testset = get_dataset('mnist', 'test')
 
-        unlearn_idx = pd.read_csv(args.unlearn_indices)['unlearn_idx'].values
-        unlearn_idx = [int(i) for i in unlearn_idx]
-
         print('==> Building model..')
         print('-----------------------------------------------------------------')
         print('initial len of trainset: ', len(trainset))  
-
-        ### remove the unlearned images from the trainset
-        trainset_filtered = torch.utils.data.Subset(trainset, list(set(range(len(trainset))) - set(unlearn_idx)))
-        print('len of filtered trainset: ', len(trainset_filtered))  
-
-        forgetset = torch.utils.data.Subset(trainset, unlearn_idx)
-        print('len of forget set: ', len(forgetset))  
-
         print('final len of trainset: ', len(trainset))  
         print('-----------------------------------------------------------------')
 
 
-        if args.use_all_ref:
-            print('using concatenated trainset and testset')
-            trainset = torch.utils.data.ConcatDataset([trainset, testset]) 
-        else:
-            trainset = torch.utils.data.ConcatDataset([trainset_filtered, testset])
+        print('using concatenated trainset and testset')
+        trainset = torch.utils.data.ConcatDataset([trainset, testset]) 
 
         # if args.inclusion_mat is not None:
         inclusion_mat = pd.read_csv(args.inclusion_mat).values
         print('inclusion_mat shape: ', inclusion_mat.shape)
         
         trainloader = torch.utils.data.DataLoader(trainset, shuffle=False, batch_size=128, num_workers=1) ### used by reference models
-
         testloader = torch.utils.data.DataLoader(testset, shuffle=False, batch_size=128, num_workers=1)
-        forgetloader = torch.utils.data.DataLoader(forgetset, shuffle=False, batch_size=128, num_workers=1)
-        forgetloader_single = torch.utils.data.DataLoader(forgetset, shuffle=False, batch_size=1, num_workers=1)
-        advloader = torch.utils.data.DataLoader(advset, shuffle=False, batch_size=128, num_workers=1)
-        remainloader = torch.utils.data.DataLoader(trainset_filtered, shuffle=False, batch_size=128, num_workers=1)
 
         outdir = args.source_model_path
-        # if args.mask_path is not None and args.mask_path != 'None':
-        #     outdir = outdir + '_mask_' + str(args.mask_path).split('with_')[1][:-3] + '_'
 
         print('------------> outdir: ', outdir)
         print('------------> epoch: ', args.epoch)
 
-        if args.trials == -32:
-            trial_seeds = [i for i in range(32)]
-            all_prob_mat = np.zeros((32, len(trainset)))
-            if args.one_hot:
-                all_prob_mat = np.zeros((32, len(trainset), args.num_classes))
-        elif args.trials == -64:
-            trial_seeds = [i for i in range(64)]
-            all_prob_mat = np.zeros((64, len(trainset)))
-        elif args.trials == -128:
-            trial_seeds = [i for i in range(128)]
-            all_prob_mat = np.zeros((128, len(trainset)))
-            if args.one_hot:
-                all_prob_mat = np.zeros((128, len(trainset), args.num_classes))
-        elif args.trials == -4:
-            trial_seeds = [i for i in range(4)]
-            all_prob_mat = np.zeros((4, len(trainset)))
-            if args.one_hot:
-                all_prob_mat = np.zeros((4, len(trainset), args.num_classes))
-        else:
-            trial_seeds = [10**i for i in range(3)][:args.trials]
+        trial_seeds = -args.trials if args.trials < 0 else args.trials
+        trial_seeds = [int(i) for i in range(trial_seeds)]
+        all_prob_mat = np.zeros((len(trial_seeds), len(trainset)))
+        if args.one_hot:
+            all_prob_mat = np.zeros((len(trial_seeds), len(trainset), args.num_classes))
 
         for trial in trial_seeds:
             if args.model == 'ResNet18':
@@ -404,13 +237,8 @@ if __name__ == "__main__":
             net = nn.DataParallel(net) ### adds the "module." prefix to the state_dict keys
             criterion = nn.CrossEntropyLoss()
 
-            step_size = args.LRsteps
             checkpoint_path = args.source_model_path + str(trial) + '/' 
-            # if args.mask_path is not None and args.mask_path != 'None':
-            #     checkpoint_path = checkpoint_path + 'mask_' + str(args.mask_path).split('with_')[1][:-3] + '/'
-
             checkpoint_path += '_ckpt.' + str(args.epoch)
-
             print('model path: ', checkpoint_path)
 
             checkpoint = torch.load(checkpoint_path)
@@ -434,7 +262,6 @@ if __name__ == "__main__":
             nonincluded_set = torch.utils.data.Subset(trainset, nonincluded_indices)
             nonincluded_loader = torch.utils.data.DataLoader(nonincluded_set, shuffle=False, batch_size=128, num_workers=1)
 
-
             eval_results = evaluation.RMIA_old(
                 model=net,
                 remain_loader=trainloader,
@@ -453,13 +280,11 @@ if __name__ == "__main__":
             non_included_loss, non_included_acc = test(net, nonincluded_loader, criterion)
             included_loss, included_acc = test(net, included_loader, criterion)
             remain_loss, remain_acc = test(net, trainloader, criterion)
-            adv_loss, adv_acc = test(net, advloader, criterion)
             print('nonincluded acc: ', non_included_acc)
             print('included acc: ', included_acc)
             print('all acc: ', remain_acc)
             if remain_acc < 50:
                 print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>, all acc: ', remain_acc)
-            print('adv acc: ', adv_acc)
 
             print('test_len: ', len(nonincluded_set))
             print('forget_len: ', len(included_set))
@@ -468,17 +293,13 @@ if __name__ == "__main__":
             test_acc_list.append(non_included_acc)
             forget_acc_list.append(included_acc)
             remain_acc_list.append(remain_acc)
-            adv_acc_list.append(adv_acc)
             seed_list.append(seed)
-
 
         df = pd.DataFrame({
             'seed': seed_list,
             'non_included_acc': test_acc_list,
             'included_acc': forget_acc_list,
             'all_acc': remain_acc_list,
-            'adv_acc': adv_acc_list,
-
         })
 
         initial_path_incmat = args.inclusion_mat.split('/')[-1].split('.')[0][5:] + '_'
@@ -487,10 +308,7 @@ if __name__ == "__main__":
 
         df_avg = df.mean(axis=0)
         df_avg_final = df_avg[['included_acc', 'non_included_acc', 'all_acc']]
-        # df_avg_final['avg'] = df_avg_final.mean(axis=0)
-        df_avg_final['adv_acc'] = df_avg['adv_acc']
         df_avg_final.to_csv(outdir + initial_path_incmat +  str(args.epoch) + '_avg_acc_results.csv')
-
 
         # convert the prob matrix to a dataframe:
         if args.one_hot:
@@ -498,4 +316,3 @@ if __name__ == "__main__":
         else:
             prob_df = pd.DataFrame(all_prob_mat.T, columns=['seed_'+str(i) for i in trial_seeds])
             prob_df.to_csv(outdir + initial_path_incmat + str(args.epoch) + '_prob_matrix_' + args.prob_method + '.csv')
-
