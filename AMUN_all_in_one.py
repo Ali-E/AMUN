@@ -24,7 +24,7 @@ parser.add_argument('--unlearn_indices', type=str)
 parser.add_argument('--unlearn_method', default='advonly', type=str)
 
 parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
-parser.add_argument('--LRsteps', default=5, type=int, help='LR scheduler step')
+parser.add_argument('--LRsteps', default=1, type=int, help='LR scheduler step')
 parser.add_argument('--epochs', default=10, type=int, help='number of epochs')
 parser.add_argument('--batch_size', default=128, type=int, help='number of classes in the dataset')
 parser.add_argument('--seed', default=1, type=int, help='seed value')

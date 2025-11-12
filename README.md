@@ -1,3 +1,17 @@
+# Basic implementation of AMUN on a single node:
+
+The following code trained a ResNet18 model on CIFAR-10 and saves it to an arbitrary folder (e.g., `original_model_normalized`):
+
+`python train_vanilla.py --model_path orig_model/`
+
+Now, given a set of indices as the forget samples (`data/unlearn_idx.csv`), we can unlearn them using AMUN using the following command:
+
+`python AMUN_all_in_one.py --source_model_path orig_model/checkpoint.pth.tar_200 --outdir unlearned_model --unlearn_indices data/unlearn_idx.csv`
+
+The unlearned model, along with a file containing the information about the utilized adversarial examples, will be saved to the address provided to `outdir` argument (e.g., `unlearned_model`).
+
+
+
 # Using slurm for parallel training, hyper-parameter tuning, and evaluations:
 
 In this section we focus on how to run the experiments in a parallel setting when we have access to several nodes controlled by slurm.
