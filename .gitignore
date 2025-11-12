@@ -20,3 +20,8 @@ RMIA_results
 ablation_plots
 plots
 *_backup*
+run_script.slurm
+original_model_normalized
+original_model
+unlearned_normalized
+unlearned_unnormalized

@@ -6,6 +6,8 @@ import pandas as pd
 import copy
 from torch.utils.data import Dataset
 import numpy as np
+from pgdl2_modified import PGDL2
+import time
 
 
 def get_data(model_count=128, seed=0, dataset_size=40000, pkeep=0.5):
@@ -105,6 +107,64 @@ class simpleDataset(Dataset):
         if self.target_transform:
             label = self.target_transform(label)
         return image, label
+
+
+def compute_advset(args, forgetset, net, initial_eps=0.01, outdir=None, transform=None, indices=None):
+    adv_img_list = None
+    s_eps_list = []
+    idx_list = []
+    adv_pred_list = []
+    orig_pred_list = []
+    label_list = []
+    delta_norm_list = []
+
+    forgetset_subset = torch.utils.data.Subset(forgetset, indices) if indices is not None else forgetset
+    dataloader = torch.utils.data.DataLoader(forgetset_subset, shuffle=False, batch_size=args.batch_size, num_workers=1)
+
+    start_time = time.time()
+    global_idx = 0
+    for idx, (inputs, targets) in enumerate(dataloader):
+        # if idx > 50:
+        #     break
+        if idx % 50 == 0:
+            print(idx)
+        inputs, targets = inputs.to(args.device), targets.to(args.device)
+
+        if args.attack == 'pgdl2':
+            pgd_finder = PGDL2(net, eps=initial_eps)
+
+        adv_img, orig_pred, adv_pred, eps_vec, dnorm_vec = pgd_finder.forward(inputs, targets)
+
+        # concatenate adversarial images
+        adv_img_list = adv_img if adv_img_list is None \
+                    else torch.cat((adv_img_list, adv_img), dim=0)
+
+        # book-keeping
+        batch_size = inputs.size(0)
+        idx_list.extend(range(global_idx, global_idx + batch_size))
+        label_list.extend(targets.cpu().tolist())
+        orig_pred_list.extend(orig_pred.cpu().tolist())
+        adv_pred_list.extend(adv_pred.cpu().tolist())
+        s_eps_list.extend(eps_vec.cpu().tolist())
+        delta_norm_list.extend(dnorm_vec.cpu().tolist())
+
+        global_idx += batch_size
+
+    # uncomment to save the adv images and epsilons
+    # adv_tensor_path = os.path.join(args.outdir, f'adv_tensor_{args.attack}.pt')
+    # torch.save(adv_img_list, adv_tensor_path)
+
+    print('Total time to compute adv set: ', time.time() - start_time)
+
+    smallest_eps = os.path.join(outdir, f'smallest_eps_{args.attack}.csv')
+    df = pd.DataFrame({'idx': idx_list, 'label': label_list, 'orig_pred': orig_pred_list, 'adv_pred': adv_pred_list, 'smallest_eps': s_eps_list, 'delta_norm': delta_norm_list})
+    df.to_csv(smallest_eps, index=False)
+
+    # advset = torch.utils.data.TensorDataset(adv_img_list)
+    advset = simpleDataset(adv_img_list, adv_pred_list, transform=transform)
+    print('length of advset: ', len(advset))
+
+    return advset, df
 
 
 class CustomImageDataset(Dataset):

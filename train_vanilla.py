@@ -68,6 +68,7 @@ class basicDataset(Dataset):
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--dataset', default='cifar')
 parser.add_argument('--arch', default='ResNet18', type=str)
+parser.add_argument('--model_path', default=None)
 parser.add_argument('--workers', default=2, type=int, metavar='N', help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=201, type=int, metavar='N', help='number of total epochs to run')
 parser.add_argument('--batch', default=128, type=int, metavar='N', help='batchsize (default: 128)')
@@ -160,6 +161,9 @@ def main():
     else:
         clip_flag    = True
 
+    if args.model_path is not None:
+        args.outdir = args.model_path
+    
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
 
@@ -173,12 +177,12 @@ def main():
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
         ])
 
         transform_test = transforms.Compose([
             transforms.ToTensor(),
-            # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
         ])
 
         trainset = torchvision.datasets.CIFAR10( root='./data', train=True, download=True, transform=transform_train)
@@ -197,12 +201,12 @@ def main():
             transforms.ToTensor(),
             transforms.RandomCrop(64, padding=4),
             transforms.RandomHorizontalFlip(),
-            # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
         ])
 
         transform_test = transforms.Compose([
             transforms.ToTensor(),
-            # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
         ])
 
         trainset_all = load_dataset('Maysee/tiny-imagenet', split='train')
