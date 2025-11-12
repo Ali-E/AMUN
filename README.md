@@ -1,6 +1,6 @@
 # Basic implementation of AMUN on a single node:
 
-The following code trained a ResNet18 model on CIFAR-10 and saves it to an arbitrary folder (e.g., `original_model_normalized`):
+The following code trains a ResNet18 model on CIFAR-10 and saves it to an arbitrary folder (e.g., `original_model_normalized`):
 
 `python train_vanilla.py --model_path orig_model/`
 
