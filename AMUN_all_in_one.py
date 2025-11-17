@@ -23,7 +23,7 @@ parser.add_argument('--outdir', type=str)
 parser.add_argument('--unlearn_indices', type=str)
 parser.add_argument('--unlearn_method', default='advonly', type=str)
 
-parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
+parser.add_argument('--lr', default=0.05, type=float, help='learning rate')
 parser.add_argument('--LRsteps', default=1, type=int, help='LR scheduler step')
 parser.add_argument('--epochs', default=10, type=int, help='number of epochs')
 parser.add_argument('--batch_size', default=128, type=int, help='number of classes in the dataset')
@@ -241,9 +241,13 @@ if __name__ == "__main__":
     net.eval()
     percentile = 50
 
+    transform_adv = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+
     # consider a sample of 50 forget set images to find the initial epsilons
     indices_sample = list(range(min(50, len(forgetset))))
-    advset_init, df_adv_init = compute_advset(args, forgetset, net, initial_eps=0.01, outdir=outdir, transform=transform_test, indices=indices_sample)
+    advset_init, df_adv_init = compute_advset(args, forgetset, net, initial_eps=0.01, outdir=outdir, transform=transform_adv, indices=indices_sample)
     print('adv df: ', df_adv_init)
 
     smallest_eps = df_adv_init['smallest_eps'].values
@@ -253,7 +257,7 @@ if __name__ == "__main__":
 
     # compute the adversarial set for the rest of forget set images
     indices_others = list(set(range(len(forgetset))) - set(indices_sample))
-    advset_others, df_adv_others = compute_advset(args, forgetset, net, initial_eps=eps_percentile, outdir=outdir, transform=transform_test, indices=indices_others)
+    advset_others, df_adv_others = compute_advset(args, forgetset, net, initial_eps=eps_percentile, outdir=outdir, transform=transform_adv, indices=indices_others)
 
     # concat the init and others adv sets
     advset = torch.utils.data.ConcatDataset([advset_init, advset_others])
